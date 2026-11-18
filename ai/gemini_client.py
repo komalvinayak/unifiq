@@ -64,13 +64,14 @@ def _get_gemini_response(prompt: str, key: str) -> str:
 def _get_groq_response(prompt: str) -> str:
     """Calls Groq API as a backup, trying several models in order."""
     client = Groq(api_key=GROQ_API_KEY)
-    # Ordered by reliability — if primary is deprecated, next one is tried
+    # OpenAI-on-Groq first (most capable), then Llama as safety net
     models_to_try = [
         GROQ_MODEL,
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
         "llama3-70b-8192",
         "llama3-8b-8192",
         "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
     ]
     last_exc = None
     for model in dict.fromkeys(models_to_try):  # deduplicate, preserve order
