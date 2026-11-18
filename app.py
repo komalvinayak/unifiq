@@ -23,7 +23,7 @@ st.set_page_config(
 
 # ── IMPORTS ──────────────────────────────────────────────────────────
 from utils.date_utils import now_date_str, now_time_str, greeting
-from ai.gemini_client import get_active_key_name
+from ai.gemini_client import get_active_key_name, get_last_error
 from ai.embeddings_client import get_active_key_name as get_embed_key_name
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
@@ -117,6 +117,10 @@ with st.sidebar:
     st.write(f"🧠 Brain: `{note_count} notes indexed`")
     if st.session_state.get("chroma_error"):
         st.error(f"⚠️ Brain index error: {st.session_state.chroma_error}")
+    ai_err = get_last_error()
+    if ai_err:
+        with st.expander("⚠️ AI error details"):
+            st.code(ai_err, language=None)
     if note_count == 0:
         if st.button("🔄 Rebuild Brain Index"):
             st.session_state.pop("chroma_initialized", None)
