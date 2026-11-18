@@ -14,16 +14,22 @@ import chromadb
 from config.settings import CHROMA_PATH, CHROMA_COLLECTION
 
 
+# In-memory ChromaDB — data is rebuilt from Google Sheets on every startup
+# This avoids disk corruption issues on Streamlit Cloud restarts
+_chroma_client = None
+
 def get_collection():
     """
-    Returns the ChromaDB collection (like a table in a regular database).
-    Creates it if it doesn't exist yet.
-    PersistentClient means data is saved to disk, not just in memory.
+    Returns the ChromaDB collection.
+    Uses EphemeralClient (in-memory) since we rebuild from Sheets on every startup.
     """
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
-    collection = client.get_or_create_collection(
+    global _chroma_client
+    if _chroma_client is None:
+        _chroma_client = chromadb.EphemeralClient()
+    
+    collection = _chroma_client.get_or_create_collection(
         name=CHROMA_COLLECTION,
-        metadata={"hnsw:space": "cosine"}  # use cosine similarity for search
+        metadata={"hnsw:space": "cosine"}
     )
     return collection
 
@@ -131,8 +137,8 @@ def rebuild_from_sheets(brain_notes: list):
             # Add to ChromaDB (skips if already exists)
             add_note_to_chroma(note_id, content, category, embedding)
             added += 1
-        except Exception:
-            continue
+        except Exception as e:
+            raise Exception(f"Embedding failed: {e}")
 
     return added
 
