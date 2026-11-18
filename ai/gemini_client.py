@@ -62,17 +62,29 @@ def _get_gemini_response(prompt: str, key: str) -> str:
 
 
 def _get_groq_response(prompt: str) -> str:
-    """
-    Calls Groq API as a backup.
-    Groq is free and very fast — uses Llama 3 model.
-    """
+    """Calls Groq API as a backup, trying several models in order."""
     client = Groq(api_key=GROQ_API_KEY)
-    completion = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1000
-    )
-    return completion.choices[0].message.content
+    # Ordered by reliability — if primary is deprecated, next one is tried
+    models_to_try = [
+        GROQ_MODEL,
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+    ]
+    last_exc = None
+    for model in dict.fromkeys(models_to_try):  # deduplicate, preserve order
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            last_exc = e
+            continue
+    raise last_exc or Exception("All Groq models failed")
 
 
 def generate(prompt: str) -> str:
