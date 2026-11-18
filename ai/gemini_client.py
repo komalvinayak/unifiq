@@ -164,6 +164,11 @@ def get_active_key_name() -> str:
     return "Groq (backup)"
 
 
+def get_key_index() -> int:
+    """Returns the current key index."""
+    return _current_key_index
+
+
 def set_key_index(index: int):
     """Lets user manually switch to a different key from the sidebar."""
     global _current_key_index

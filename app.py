@@ -23,8 +23,9 @@ st.set_page_config(
 
 # ── IMPORTS ──────────────────────────────────────────────────────────
 from utils.date_utils import now_date_str, now_time_str, greeting
-from ai.gemini_client import get_active_key_name, get_last_error
+from ai.gemini_client import get_active_key_name, get_key_index, set_key_index, get_last_error
 from ai.embeddings_client import get_active_key_name as get_embed_key_name
+from config.settings import GEMINI_KEYS, GROQ_API_KEY
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
 from modules.brain.brain_core import categorize_note, save_note
@@ -106,13 +107,25 @@ with st.sidebar:
 
     # System info
     st.caption("**System Status**")
-    ai_key   = get_active_key_name()
-    emb_key  = get_embed_key_name()
-    # Show single line if both use same key, two lines if different
-    if ai_key == emb_key:
-        st.write(f"🤖 AI: `{ai_key}`")
+
+    # Key selector — lets user pick which Gemini key to use
+    if GEMINI_KEYS:
+        key_options = [f"Gemini Key {i + 1}" for i in range(len(GEMINI_KEYS))]
+        selected_idx = st.selectbox(
+            "🤖 AI Key",
+            options=list(range(len(GEMINI_KEYS))),
+            format_func=lambda i: key_options[i],
+            index=get_key_index(),
+            key="sidebar_ai_key_select",
+        )
+        set_key_index(selected_idx)
+        emb_key = get_embed_key_name()
+        if emb_key != key_options[selected_idx]:
+            st.caption(f"Embed: `{emb_key}`")
+        if GROQ_API_KEY:
+            st.caption("Groq available as auto-fallback")
     else:
-        st.write(f"🤖 AI: `{ai_key}`  ·  Embed: `{emb_key}`")
+        st.write(f"🤖 AI: `{get_active_key_name()}`")
     note_count = st.session_state.get("chroma_note_count", 0)
     st.write(f"🧠 Brain: `{note_count} notes indexed`")
     if st.session_state.get("chroma_error"):
