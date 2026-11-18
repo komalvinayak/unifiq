@@ -1,0 +1,22 @@
+# Never push these to GitHub
+.env
+sheets_creds.json
+*.json
+
+# ChromaDB local files (rebuilt on startup, no need to push)
+knowledge_base/chroma_db/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# System files
+.DS_Store
+*.egg-info/
+dist/
+build/
