@@ -125,30 +125,36 @@ def ask_brain():
             try:
                 answer, sources = rag_answer(question)
                 _add_to_history(question)
-                # Clear so the input doesn't stay pre-filled after a rerun
+                # Store result in session_state so it survives the rerun below
+                st.session_state.brain_last_answer = answer
+                st.session_state.brain_last_sources = sources
+                st.session_state.brain_last_question = question
                 st.session_state.pop("brain_question", None)
-
-                # ── ANSWER ────────────────────────────────────────────
-                st.markdown("### Answer")
-                st.write(answer)
-
-                # ── SOURCES WITH SIMILARITY SCORES ───────────────────
-                if sources:
-                    st.divider()
-                    st.markdown("**📌 Notes used to answer this:**")
-                    for i, (note, score) in enumerate(sources, 1):
-                        pct = int(score * 100)
-                        # Score badge colour: green ≥80, amber ≥60, grey otherwise
-                        if pct >= 80:
-                            badge = f"🟢 {pct}% match"
-                        elif pct >= 60:
-                            badge = f"🟡 {pct}% match"
-                        else:
-                            badge = f"⚪ {pct}% match"
-
-                        with st.expander(f"Source {i}  {badge}  — {note[:55]}…" if len(note) > 55 else f"Source {i}  {badge}  — {note}"):
-                            st.write(note)
+                st.rerun()
 
             except Exception as e:
                 st.error(f"Could not search brain: {e}")
                 st.info("Make sure you have added some notes first.")
+
+    # ── DISPLAY LAST ANSWER (persists across reruns) ──────────────────
+    if "brain_last_answer" in st.session_state:
+        st.divider()
+        st.markdown(f"**Q: {st.session_state.brain_last_question}**")
+        st.markdown("### Answer")
+        st.write(st.session_state.brain_last_answer)
+
+        sources = st.session_state.get("brain_last_sources", [])
+        if sources:
+            st.divider()
+            st.markdown("**📌 Notes used to answer this:**")
+            for i, (note, score) in enumerate(sources, 1):
+                pct = int(score * 100)
+                if pct >= 80:
+                    badge = f"🟢 {pct}% match"
+                elif pct >= 60:
+                    badge = f"🟡 {pct}% match"
+                else:
+                    badge = f"⚪ {pct}% match"
+
+                with st.expander(f"Source {i}  {badge}  — {note[:55]}…" if len(note) > 55 else f"Source {i}  {badge}  — {note}"):
+                    st.write(note)
