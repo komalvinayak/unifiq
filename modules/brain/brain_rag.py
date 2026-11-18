@@ -80,8 +80,12 @@ def _render_sources(sources: list):
 
 def _process_question(question: str):
     """Runs RAG for `question`, appends both sides to brain_chat, updates search history."""
-    # Append user message
-    st.session_state.brain_chat.append({"role": "user", "content": question, "sources": []})
+    # Guard against duplicate processing (double-click or Streamlit re-render race)
+    chat = st.session_state.brain_chat
+    if chat and chat[-1]["role"] == "user" and chat[-1]["content"] == question:
+        return
+
+    chat.append({"role": "user", "content": question, "sources": []})
     _add_to_search_history(question)
 
     # Run RAG
