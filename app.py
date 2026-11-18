@@ -87,8 +87,21 @@ st.markdown("""
 
 # ── SIDEBAR ──────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<div class="sidebar-title">⚡ UNIFIQ</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-sub">Unified Intelligence</div>', unsafe_allow_html=True)
+    st.markdown('''
+<div style="
+    display:inline-block;
+    background:#0a0a0a;
+    color:#ffffff;
+    font-size:18px;
+    font-weight:800;
+    letter-spacing:2px;
+    padding:7px 16px;
+    border-radius:8px;
+    margin-bottom:4px;
+    border:1px solid #2d2d2d;
+">⚡ UNIFIQ</div>
+<div style="font-size:11px;color:#94A3B8;margin-top:4px;margin-bottom:16px;padding-left:2px;">Unified Intelligence</div>
+''', unsafe_allow_html=True)
 
     st.divider()
 
