@@ -1,375 +1,486 @@
-# ── brain_map.py ─────────────────────────────────────────────────────
-# Visual knowledge map with category-first navigation.
-#
-# Default view: hub-spoke layout — category nodes in center,
-#               notes radiating outward, similarity lines between them.
-# Click a category button → zooms into just that category's notes.
-# ─────────────────────────────────────────────────────────────────────
-
-import os
-import tempfile
+import json
+import math
 import numpy as np
-import networkx as nx
 import streamlit as st
 import streamlit.components.v1 as components
-from pyvis.network import Network
-from database.chroma_client import get_all_notes_with_embeddings
-
+from collections import Counter
+from database.sheets_client import get_all_rows
 
 CATEGORY_COLORS = {
-    "Work":      "#3B82F6",
-    "Learning":  "#10B981",
-    "Personal":  "#F59E0B",
-    "Technical": "#8B5CF6",
-    "Career":    "#EF4444",
+    "Work":      "#4A90D9",
+    "Learning":  "#27AE60",
+    "Personal":  "#F39C12",
+    "Technical": "#8E44AD",
+    "Career":    "#E74C3C",
 }
-
-CATEGORY_EMOJI = {
-    "Work": "💼", "Learning": "📚",
-    "Personal": "🌱", "Technical": "💻", "Career": "🎯",
+_DEFAULT_COLOR = "#64748b"
+_STOPWORDS = {
+    "the","a","an","is","in","of","to","and","or","for","with","it","this",
+    "that","are","was","be","as","at","by","from","on","not","we","you","have",
+    "has","i","my","our","your","their","its","can","do","did","will","would",
+    "should","could","may","might","which","who","when","where","what","how",
+    "s","t","re","ve","ll","d","m",
 }
 
 
 # ── helpers ──────────────────────────────────────────────────────────
 
 def _cosine(a, b) -> float:
-    a, b = np.array(a), np.array(b)
+    a, b = np.array(a, dtype=float), np.array(b, dtype=float)
     n = np.linalg.norm(a) * np.linalg.norm(b)
-    return float(np.dot(a, b) / n) if n else 0.0
+    return float(np.dot(a, b) / n) if n > 0 else 0.0
 
 
-def _render_pyvis(G: nx.Graph, height: int = 560):
-    """Build a Pyvis network from G and embed it in Streamlit."""
-    if G.number_of_nodes() == 0:
-        st.info("No notes in this category yet. Add a note first.")
-        return
+def _parse_emb(row) -> list | None:
+    raw = row.get("embedding", "")
+    if not raw or str(raw).strip() in ("", "[]"):
+        return None
+    try:
+        emb = json.loads(raw)
+        return emb if isinstance(emb, list) and len(emb) > 0 else None
+    except Exception:
+        return None
 
-    net = Network(
-        height=f"{height}px",
-        width="100%",
-        bgcolor="#FFFFFF",
-        font_color="#1E293B",
-        notebook=False,
+
+def _render_legend():
+    items = "".join(
+        f'<span style="display:inline-flex;align-items:center;gap:5px;margin-right:18px;">'
+        f'<span style="width:11px;height:11px;border-radius:50%;background:{color};'
+        f'display:inline-block;flex-shrink:0;"></span>'
+        f'<span style="font-size:0.82rem;color:#cbd5e1;">{cat}</span></span>'
+        for cat, color in CATEGORY_COLORS.items()
     )
-    net.set_options("""
-    {
-      "nodes": {
-        "borderWidth": 2,
-        "borderWidthSelected": 4,
-        "shadow": {
-          "enabled": true,
-          "size": 10,
-          "x": 2,
-          "y": 2
-        },
-        "font": {
-          "size": 13,
-          "face": "Inter, Arial, sans-serif",
-          "bold": {"mod": "bold"}
-        }
-      },
-      "edges": {
-        "smooth": {"type": "dynamic"},
-        "shadow": false
-      },
-      "physics": {
-        "enabled": true,
-        "stabilization": {"iterations": 200, "fit": true},
-        "barnesHut": {
-          "gravitationalConstant": -12000,
-          "springLength": 180,
-          "springConstant": 0.03,
-          "damping": 0.09
-        }
-      },
-      "interaction": {
-        "hover": true,
-        "tooltipDelay": 50,
-        "navigationButtons": true,
-        "keyboard": true,
-        "zoomView": true
-      }
-    }
-    """)
-    net.from_nx(G)
-
-    # Write to current directory — works on Windows and Linux
-    map_path = "brain_map_temp.html"
-    net.write_html(map_path)
-
-    with open(map_path, "r", encoding="utf-8") as f:
-        html = f.read()
-
-    # Inject custom CSS for white background + tooltip styling + legend overlay
-    style_inject = """
-    <style>
-      body, html { background: #FFFFFF !important; margin: 0; padding: 0; }
-      #mynetwork {
-        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
-        border: 1.5px solid #e2e8f0;
-        border-radius: 12px;
-      }
-      div.vis-tooltip {
-        background: #1E293B !important;
-        color: #F1F5F9 !important;
-        border: none !important;
-        border-radius: 10px !important;
-        padding: 10px 14px !important;
-        font-size: 13px !important;
-        max-width: 320px !important;
-        white-space: pre-wrap !important;
-        word-break: break-word !important;
-        line-height: 1.6 !important;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.25) !important;
-      }
-      #map-legend {
-        position: absolute;
-        top: 12px;
-        right: 12px;
-        background: rgba(255,255,255,0.92);
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 10px 14px;
-        font-family: Inter, Arial, sans-serif;
-        font-size: 12px;
-        line-height: 2;
-        z-index: 999;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-        pointer-events: none;
-      }
-    </style>
-    """
-
-    legend_html = """
-    <div id="map-legend">
-      <div style="font-weight:700; color:#1E293B; margin-bottom:4px; font-size:11px; letter-spacing:0.05em; text-transform:uppercase;">Categories</div>
-      <div style="color:#3B82F6"><span style="font-size:16px">●</span> Work</div>
-      <div style="color:#10B981"><span style="font-size:16px">●</span> Learning</div>
-      <div style="color:#F59E0B"><span style="font-size:16px">●</span> Personal</div>
-      <div style="color:#8B5CF6"><span style="font-size:16px">●</span> Technical</div>
-      <div style="color:#EF4444"><span style="font-size:16px">●</span> Career</div>
-      <div style="margin-top:6px; padding-top:6px; border-top:1px solid #e2e8f0; color:#94A3B8; font-size:11px;">- - - similar notes</div>
-    </div>
-    """
-
-    html = html.replace("</head>", style_inject + "</head>")
-    html = html.replace("</body>", legend_html + "</body>")
-
-    components.html(html, height=height + 20, scrolling=False)
+    st.markdown(
+        f'<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);'
+        f'border-radius:8px;padding:10px 14px;display:flex;flex-wrap:wrap;align-items:center;'
+        f'gap:4px;margin-bottom:12px;">'
+        f'{items}'
+        f'<span style="font-size:0.78rem;color:#475569;margin-left:4px;">'
+        f'<span style="letter-spacing:2px;">– – –</span> similar notes</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
-# ── graph builders ───────────────────────────────────────────────────
+# ── VIEW 1 — FORCE GALAXY ────────────────────────────────────────────
 
-def _build_overview(notes_data: dict) -> nx.Graph:
-    """
-    Hub-spoke layout:
-    • Large category nodes in the middle
-    • Smaller note nodes connected to their category
-    • Thin lines between notes that are semantically similar
-    """
-    G = nx.Graph()
+def _render_force_galaxy(rows):
+    _render_legend()
 
-    ids        = notes_data["ids"]
-    documents  = notes_data["documents"]
-    embeddings = notes_data["embeddings"]
-    metadatas  = notes_data["metadatas"]
-
-    # Count per category
-    cat_counts: dict[str, int] = {}
-    for m in metadatas:
-        c = m.get("category", "Personal")
-        cat_counts[c] = cat_counts.get(c, 0) + 1
-
-    # Category hub nodes
-    for cat, count in cat_counts.items():
-        color = CATEGORY_COLORS.get(cat, "#94A3B8")
-        emoji = CATEGORY_EMOJI.get(cat, "📝")
-        G.add_node(
-            f"CAT_{cat}",
-            label=f"{emoji} {cat}\n({count} notes)",
-            title=f"📂 {cat}\n{count} note{'s' if count != 1 else ''} in this category",
-            color={"background": color, "border": color,
-                   "highlight": {"background": color, "border": "#1E293B"}},
-            size=58,
-            shape="dot",
-            font={"size": 15, "color": "#FFFFFF", "bold": True},
-        )
-
-    # Note nodes + category edges
-    for i, note_id in enumerate(ids):
-        cat   = metadatas[i].get("category", "Personal")
-        text  = documents[i]
-        color = CATEGORY_COLORS.get(cat, "#94A3B8")
-        # Short label for display, FULL text in tooltip
-        label = text[:20] + "…" if len(text) > 20 else text
-        tooltip = f"📝 {cat}\n\n{text}"
-
-        G.add_node(
-            note_id,
-            label=label,
-            title=tooltip,
-            color={"background": color + "CC",   # slightly transparent
-                   "border": color,
-                   "highlight": {"background": color, "border": "#1E293B"}},
-            size=20,
-            shape="dot",
-            font={"size": 11, "color": "#1E293B"},
-        )
-        G.add_edge(f"CAT_{cat}", note_id,
-                   color={"color": color + "55", "highlight": color},
-                   width=1.5, dashes=False)
-
-    # Similarity edges between notes
-    for i in range(len(ids)):
-        for j in range(i + 1, len(ids)):
-            if embeddings[i] and embeddings[j]:
-                sim = _cosine(embeddings[i], embeddings[j])
-                if sim > 0.70:
-                    G.add_edge(
-                        ids[i], ids[j],
-                        color={"color": "#94A3B8", "highlight": "#475569"},
-                        width=max(1, int(sim * 3)),
-                        dashes=True,
-                        title=f"🔗 Related — {sim:.0%} similar",
-                    )
-    return G
-
-
-def _build_category_graph(notes_data: dict, category: str) -> nx.Graph:
-    """
-    Zoomed-in view of one category:
-    • All notes from that category as nodes
-    • Lines between semantically similar notes
-    """
-    G = nx.Graph()
-
-    ids        = notes_data["ids"]
-    documents  = notes_data["documents"]
-    embeddings = notes_data["embeddings"]
-    metadatas  = notes_data["metadatas"]
-
-    color      = CATEGORY_COLORS.get(category, "#94A3B8")
-    cat_idx    = [i for i, m in enumerate(metadatas)
-                  if m.get("category") == category]
-
-    if not cat_idx:
-        return G
-
-    for i in cat_idx:
-        text  = documents[i]
-        label = text[:30] + "…" if len(text) > 30 else text
-        G.add_node(
-            ids[i],
-            label=label,
-            title=text,
-            color=color,
-            size=25,
-            shape="dot",
-        )
-
-    # Similarity edges (lower threshold so notes connect more)
-    for a in range(len(cat_idx)):
-        for b in range(a + 1, len(cat_idx)):
-            i, j = cat_idx[a], cat_idx[b]
-            if embeddings[i] and embeddings[j]:
-                sim = _cosine(embeddings[i], embeddings[j])
-                if sim > 0.50:
-                    G.add_edge(
-                        ids[i], ids[j],
-                        color=color,
-                        width=max(1, int(sim * 4)),
-                        title=f"Similarity: {sim:.0%}",
-                    )
-    return G
-
-
-# ── main renderer ────────────────────────────────────────────────────
-
-def render_map():
-    st.subheader("🗺️ Your Knowledge Map")
-    st.caption("Click a category to explore its notes. Hover over any dot to read it.")
-
-    notes_data = get_all_notes_with_embeddings()
-
-    if not notes_data["ids"]:
-        st.info("No notes yet. Add some notes in 'Dump Thought' first.")
+    try:
+        from pyvis.network import Network
+        import networkx as nx
+    except ImportError:
+        st.error("Run: `pip install pyvis networkx` then restart.")
         return
 
-    total = len(notes_data["ids"])
+    # Category filter buttons
+    cats_present = sorted({r.get("category", "Personal") for r in rows})
+    filter_key = "galaxy_cat_filter"
+    if filter_key not in st.session_state:
+        st.session_state[filter_key] = "All"
 
-    # Notes per category
-    cat_counts: dict[str, int] = {}
-    for m in notes_data["metadatas"]:
-        c = m.get("category", "Personal")
-        cat_counts[c] = cat_counts.get(c, 0) + 1
-
-    # ── CATEGORY BUTTONS ─────────────────────────────────────────────
-    if "map_category" not in st.session_state:
-        st.session_state.map_category = "All"
-
-    active_cats = ["All"] + [c for c in CATEGORY_COLORS if c in cat_counts]
-    cols = st.columns(len(active_cats))
-
-    for i, cat in enumerate(active_cats):
-        if cat == "All":
-            lbl = f"🌐 All  ({total})"
-        else:
-            lbl = f"{CATEGORY_EMOJI.get(cat,'📝')} {cat}  ({cat_counts[cat]})"
-
-        is_active = (st.session_state.map_category == cat)
-        if cols[i].button(lbl, key=f"mapcat_{cat}",
-                          type="primary" if is_active else "secondary",
-                          use_container_width=True):
-            st.session_state.map_category = cat
+    btn_cols = st.columns(len(cats_present) + 1)
+    for i, cat in enumerate(["All"] + cats_present):
+        active = st.session_state[filter_key] == cat
+        if btn_cols[i].button(cat, key=f"gf_{cat}",
+                              type="primary" if active else "secondary",
+                              use_container_width=True):
+            st.session_state[filter_key] = cat
             st.rerun()
 
-    st.divider()
+    selected_cat = st.session_state[filter_key]
+    filtered = rows if selected_cat == "All" else [r for r in rows if r.get("category") == selected_cat]
 
-    # ── GRAPH / CARDS ────────────────────────────────────────────────
-    selected = st.session_state.map_category
+    G = nx.Graph()
 
-    if selected == "All":
-        st.write(f"**{total} notes** — large circles = categories, small circles = notes")
-        G = _build_overview(notes_data)
-        _render_pyvis(G, height=540)
-    else:
-        # Show notes as readable cards — more useful than a sub-graph
-        color = CATEGORY_COLORS.get(selected, "#94A3B8")
-        emoji = CATEGORY_EMOJI.get(selected, "📝")
-        count = cat_counts.get(selected, 0)
+    # Category hub nodes
+    cat_counts = Counter(r.get("category", "Personal") for r in filtered)
+    for cat, cnt in cat_counts.items():
+        color = CATEGORY_COLORS.get(cat, _DEFAULT_COLOR)
+        G.add_node(f"CAT_{cat}", label=cat, title=f"{cnt} notes",
+                   color={"background": color, "border": color},
+                   size=35, shape="dot",
+                   font={"size": 15, "color": "#ffffff", "bold": True})
 
-        st.markdown(
-            f"<span style='color:{color}; font-size:1.1rem'>●</span> "
-            f"**{selected}** — {count} note{'s' if count != 1 else ''}",
-            unsafe_allow_html=True,
-        )
-        st.divider()
+    # Note nodes + category edges
+    embeddings = {}
+    for r in filtered:
+        nid  = str(r.get("note_id", ""))
+        text = r.get("content", "")
+        cat  = r.get("category", "Personal")
+        if not nid or not text:
+            continue
+        color = CATEGORY_COLORS.get(cat, _DEFAULT_COLOR)
+        label = text[:25] + "…" if len(text) > 25 else text
+        G.add_node(nid, label=label, title=text,
+                   color={"background": color + "b3", "border": color},
+                   size=12, shape="dot",
+                   font={"size": 10, "color": "#e2e8f0"})
+        G.add_edge(f"CAT_{cat}", nid,
+                   color={"color": "#334155"}, width=1, dashes=False)
+        emb = _parse_emb(r)
+        if emb:
+            embeddings[nid] = emb
 
-        # Pull matching notes from vector store
-        ids       = notes_data["ids"]
-        documents = notes_data["documents"]
-        metadatas = notes_data["metadatas"]
+    # Similarity edges
+    nids = list(embeddings.keys())
+    for i in range(len(nids)):
+        for j in range(i + 1, len(nids)):
+            sim = _cosine(embeddings[nids[i]], embeddings[nids[j]])
+            if sim > 0.45:
+                G.add_edge(nids[i], nids[j],
+                           color={"color": "#7c6af7"}, width=0.5,
+                           dashes=True, title=f"{sim:.0%} similar")
 
-        cat_notes = [
-            {"id": ids[i], "text": documents[i]}
-            for i, m in enumerate(metadatas)
-            if m.get("category") == selected
-        ]
+    net = Network(height="600px", width="100%",
+                  bgcolor="#0f1117", font_color="#e2e8f0", notebook=False)
+    net.set_options(json.dumps({
+        "physics": {
+            "enabled": True,
+            "forceAtlas2Based": {
+                "gravitationalConstant": -50,
+                "springLength": 100,
+                "springConstant": 0.04,
+                "damping": 0.09,
+            },
+            "solver": "forceAtlas2Based",
+            "stabilization": {"iterations": 150},
+        },
+        "interaction": {"hover": True, "tooltipDelay": 50,
+                        "navigationButtons": True, "keyboard": True},
+        "edges": {"smooth": {"type": "dynamic"}},
+    }))
+    net.from_nx(G)
+    net.save_graph("brain_map_temp.html")
+    html = open("brain_map_temp.html", "r", encoding="utf-8").read()
+    html = html.replace("</head>",
+        "<style>body,html{background:#0f1117!important;margin:0;padding:0;}"
+        "#mynetwork{border-radius:12px;border:1px solid #1e293b;}"
+        "div.vis-tooltip{background:#1e293b!important;color:#f1f5f9!important;"
+        "border-radius:8px!important;padding:10px!important;max-width:300px!important;"
+        "white-space:pre-wrap!important;font-size:12px!important;}</style></head>")
+    components.html(html, height=620, scrolling=False)
 
-        if not cat_notes:
-            st.info(f"No notes in {selected} yet.")
-        else:
-            for note in cat_notes:
-                st.markdown(
-                    f"""<div style="
-                        background: rgba(255,255,255,0.04);
-                        border-left: 4px solid {color};
-                        border-radius: 8px;
-                        padding: 14px 18px;
-                        margin-bottom: 12px;
-                        color: #E2E8F0;
-                        font-size: 0.95rem;
-                        line-height: 1.6;
-                    ">{note['text']}</div>""",
-                    unsafe_allow_html=True,
-                )
+
+# ── VIEW 2 — MEMORY RIVER ────────────────────────────────────────────
+
+def _render_memory_river(rows):
+    _render_legend()
+    if not rows:
+        st.info("No notes yet.")
+        return
+
+    notes_js = json.dumps(
+        [{"content": r.get("content", ""), "category": r.get("category", "Personal")}
+         for r in rows],
+        ensure_ascii=True
+    )
+    colors_js = json.dumps(CATEGORY_COLORS, ensure_ascii=True)
+
+    html = f"""<!DOCTYPE html><html><head>
+<style>
+  body{{margin:0;background:#0a0f1e;overflow:hidden;}}
+  canvas{{display:block;}}
+  #tip{{position:absolute;display:none;background:#1e293b;color:#e2e8f0;
+        border:1px solid #334155;border-radius:8px;padding:8px 12px;
+        font:12px/1.5 Inter,sans-serif;max-width:260px;pointer-events:none;
+        z-index:10;word-break:break-word;}}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="tip"></div>
+<script>
+const NOTES={notes_js};
+const COLORS={colors_js};
+const DEFAULT="#64748b";
+const W=Math.min(window.innerWidth,900), H=500;
+const canvas=document.getElementById("c");
+canvas.width=W; canvas.height=H;
+const ctx=canvas.getContext("2d");
+const tip=document.getElementById("tip");
+const RY=H/2, PAD=60;
+let time=0;
+
+const bubbles=NOTES.map((n,i)=>{{
+  const r=Math.min(28,Math.max(10,n.content.length/18));
+  return {{
+    x: PAD+(i/(Math.max(NOTES.length-1,1)))*(W-PAD*2),
+    baseY: i%2===0? RY-80-(i%4)*18 : RY+80+(i%4)*18,
+    r, color:COLORS[n.category]||DEFAULT,
+    content:n.content, category:n.category, i
+  }};
+}});
+
+function draw(){{
+  ctx.clearRect(0,0,W,H);
+
+  // River
+  const rg=ctx.createLinearGradient(0,0,W,0);
+  rg.addColorStop(0,"#1e3a5f"); rg.addColorStop(1,"#0f2847");
+  ctx.save();
+  ctx.shadowColor="#3b82f6"; ctx.shadowBlur=12;
+  ctx.fillStyle=rg;
+  ctx.fillRect(0,RY-3,W,6);
+  ctx.restore();
+
+  bubbles.forEach(b=>{{
+    const y=b.baseY+Math.sin(time/1.2+b.i*0.9)*0.4;
+    b.curY=y;
+
+    // Connector
+    ctx.save();
+    ctx.strokeStyle=b.color;
+    ctx.globalAlpha=0.35;
+    ctx.setLineDash([4,4]);
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(b.x, y>RY? y-b.r : y+b.r);
+    ctx.lineTo(b.x, RY);
+    ctx.stroke();
+    ctx.restore();
+
+    // Bubble
+    ctx.save();
+    ctx.shadowColor=b.color; ctx.shadowBlur=10;
+    ctx.globalAlpha=0.88;
+    ctx.beginPath();
+    ctx.arc(b.x, y, b.r, 0, Math.PI*2);
+    ctx.fillStyle=b.color;
+    ctx.fill();
+    ctx.strokeStyle="rgba(255,255,255,0.7)";
+    ctx.lineWidth=1.5;
+    ctx.stroke();
+    ctx.restore();
+  }});
+
+  time+=0.016;
+  requestAnimationFrame(draw);
+}}
+draw();
+
+canvas.addEventListener("mousemove",e=>{{
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  let found=null;
+  bubbles.forEach(b=>{{
+    const dy=(b.curY||b.baseY)-my;
+    if(Math.sqrt((b.x-mx)**2+dy**2)<b.r+4) found=b;
+  }});
+  if(found){{
+    tip.style.display="block";
+    tip.style.left=(e.clientX+10)+"px";
+    tip.style.top=(e.clientY-40)+"px";
+    tip.textContent=found.content.slice(0,120)+(found.content.length>120?"…":"");
+  }} else {{
+    tip.style.display="none";
+  }}
+}});
+canvas.addEventListener("mouseleave",()=>tip.style.display="none");
+</script></body></html>"""
+
+    components.html(html, height=520, scrolling=False)
+
+
+# ── VIEW 3 — TOPIC CLOUDS ────────────────────────────────────────────
+
+def _cluster_by_similarity(rows):
+    indexed = [(i, r) for i, r in enumerate(rows) if _parse_emb(r)]
+    no_emb  = [(i, r) for i, r in enumerate(rows) if not _parse_emb(r)]
+    clustered = set()
+    clusters  = []
+
+    for i, r in indexed:
+        if i in clustered:
+            continue
+        emb_i = _parse_emb(r)
+        cluster_rows = [r]
+        clustered.add(i)
+        for j, r2 in indexed:
+            if j in clustered:
+                continue
+            emb_j = _parse_emb(r2)
+            if _cosine(emb_i, emb_j) > 0.52:
+                cluster_rows.append(r2)
+                clustered.add(j)
+        clusters.append(cluster_rows)
+
+    for _, r in no_emb:
+        clusters.append([r])
+
+    result = []
+    for cl in clusters:
+        cats   = [r.get("category", "Personal") for r in cl]
+        color  = CATEGORY_COLORS.get(Counter(cats).most_common(1)[0][0], _DEFAULT_COLOR)
+        words  = []
+        for r in cl:
+            words += [w.lower().strip(".,;:!?\"'") for w in r.get("content","").split()]
+        words = [w for w in words if w and w not in _STOPWORDS and len(w) > 2]
+        label = Counter(words).most_common(1)[0][0].capitalize() if words else "Notes"
+        result.append({
+            "notes":  [r.get("content","") for r in cl],
+            "color":  color,
+            "label":  label,
+        })
+    return result
+
+
+def _cluster_positions(n):
+    if n == 1:  return [(450, 290)]
+    if n == 2:  return [(250, 290), (650, 290)]
+    if n <= 4:
+        return [(250,180),(650,180),(250,400),(650,400)][:n]
+    if n <= 6:
+        xs = [200, 450, 700]
+        return [(x, y) for y in [180,400] for x in xs][:n]
+    cols = 3
+    rows_n = math.ceil(n / cols)
+    pts = []
+    for r in range(rows_n):
+        for c in range(cols):
+            if len(pts) < n:
+                pts.append((160 + c*260, 150 + r*220))
+    return pts
+
+
+def _render_topic_clouds(rows):
+    _render_legend()
+    if not rows:
+        st.info("No notes yet.")
+        return
+
+    clusters = _cluster_by_similarity(rows)
+    positions = _cluster_positions(len(clusters))
+
+    cluster_data = [
+        {"notes": c["notes"], "color": c["color"], "label": c["label"],
+         "cx": positions[i][0], "cy": positions[i][1]}
+        for i, c in enumerate(clusters)
+    ]
+    clusters_js = json.dumps(cluster_data, ensure_ascii=True)
+
+    html = f"""<!DOCTYPE html><html><head>
+<style>
+  body{{margin:0;background:#0a0f1e;overflow:hidden;}}
+  canvas{{display:block;}}
+  #tip2{{position:absolute;display:none;background:#1e293b;color:#e2e8f0;
+         border:1px solid #334155;border-radius:8px;padding:8px 12px;
+         font:12px/1.5 Inter,sans-serif;max-width:260px;pointer-events:none;
+         z-index:10;word-break:break-word;}}
+</style></head><body>
+<canvas id="c2"></canvas>
+<div id="tip2"></div>
+<script>
+const CLUSTERS={clusters_js};
+const W=Math.min(window.innerWidth,900), H=580;
+const canvas=document.getElementById("c2");
+canvas.width=W; canvas.height=H;
+const ctx=canvas.getContext("2d");
+const tip=document.getElementById("tip2");
+let time=0;
+
+function hexToRgba(hex,a){{
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgba(${{r}},${{g}},${{b}},${{a}})`;
+}}
+
+function draw(){{
+  ctx.clearRect(0,0,W,H);
+
+  CLUSTERS.forEach(cl=>{{
+    const radius=Math.min(120,Math.max(70,55+cl.notes.length*18));
+
+    // Glow blob
+    ctx.save();
+    ctx.shadowColor=cl.color; ctx.shadowBlur=28;
+    ctx.beginPath();
+    ctx.arc(cl.cx,cl.cy,radius,0,Math.PI*2);
+    ctx.fillStyle=hexToRgba(cl.color,0.12);
+    ctx.fill();
+    ctx.strokeStyle=hexToRgba(cl.color,0.4);
+    ctx.lineWidth=1.5;
+    ctx.stroke();
+    ctx.restore();
+
+    // Label
+    ctx.fillStyle=cl.color;
+    ctx.font="bold 13px Inter,Arial,sans-serif";
+    ctx.textAlign="center";
+    ctx.fillText(cl.label,cl.cx,cl.cy+5);
+
+    // Note count
+    ctx.fillStyle="rgba(255,255,255,0.35)";
+    ctx.font="10px Inter,Arial,sans-serif";
+    ctx.fillText(cl.notes.length+" note"+(cl.notes.length!==1?"s":""),cl.cx,cl.cy+22);
+
+    // Orbiting dots
+    cl.notes.forEach((note,ni)=>{{
+      const total=cl.notes.length;
+      const angle=(2*Math.PI*ni/total)+time*(0.4+ni*0.05);
+      const orb=radius*0.72+(ni%3)*10;
+      const dx=cl.cx+orb*Math.cos(angle);
+      const dy=cl.cy+orb*Math.sin(angle);
+
+      ctx.save();
+      ctx.shadowColor=cl.color; ctx.shadowBlur=6;
+      ctx.beginPath();
+      ctx.arc(dx,dy,6,0,Math.PI*2);
+      ctx.fillStyle=cl.color;
+      ctx.fill();
+      ctx.strokeStyle="rgba(255,255,255,0.6)";
+      ctx.lineWidth=1;
+      ctx.stroke();
+      ctx.restore();
+
+      cl._dots=cl._dots||[];
+      cl._dots[ni]={{x:dx,y:dy,content:note}};
+    }});
+  }});
+
+  time+=0.003;
+  requestAnimationFrame(draw);
+}}
+draw();
+
+canvas.addEventListener("mousemove",e=>{{
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  let found=null;
+  CLUSTERS.forEach(cl=>{{
+    (cl._dots||[]).forEach(d=>{{
+      if(d&&Math.sqrt((d.x-mx)**2+(d.y-my)**2)<10) found=d;
+    }});
+  }});
+  if(found){{
+    tip2.style.display="block";
+    tip2.style.left=(e.clientX+12)+"px";
+    tip2.style.top=(e.clientY-45)+"px";
+    tip2.textContent=found.content.slice(0,100)+(found.content.length>100?"…":"");
+  }} else {{
+    tip2.style.display="none";
+  }}
+}});
+canvas.addEventListener("mouseleave",()=>tip2.style.display="none");
+</script></body></html>"""
+
+    components.html(html, height=600, scrolling=False)
+
+
+# ── MAIN ─────────────────────────────────────────────────────────────
+
+def render_map():
+    rows = get_all_rows("brain_notes")
+    if not rows:
+        st.info("Add some notes first to see your Brain Map.")
+        return
+
+    view = st.radio(
+        "", ["🪐 Force Galaxy", "🌊 Memory River", "☁️ Topic Clouds"],
+        horizontal=True, label_visibility="collapsed"
+    )
+    st.caption("Force Galaxy = connections · Memory River = timeline · Topic Clouds = AI groups")
+
+    if view == "🪐 Force Galaxy":
+        _render_force_galaxy(rows)
+    elif view == "🌊 Memory River":
+        _render_memory_river(rows)
+    elif view == "☁️ Topic Clouds":
+        _render_topic_clouds(rows)

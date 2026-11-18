@@ -51,12 +51,12 @@ def _get_selected_model_info() -> dict:
 
 def _get_gemini_response(prompt: str, key: str, model_id: str = None) -> str:
     """
-    Tries the specified model (or primary) on v1, then v1beta.
-    Raises so the caller can rotate keys or try the full fallback chain.
+    Tries the specified model on v1beta first, then v1.
+    AQ.Ab8-format keys work on v1beta; gemini-2.0-flash only exists on v1beta.
     """
     model = model_id or GEMINI_MODEL or "gemini-2.0-flash"
     last_exc = None
-    for base in [_BASE_URL, _BASE_URL_BETA]:
+    for base in [_BASE_URL_BETA, _BASE_URL]:
         try:
             return _post_gemini(f"{base}/{model}:generateContent", prompt, key)
         except requests.exceptions.HTTPError as e:
@@ -77,9 +77,8 @@ def _get_groq_response(prompt: str, model_id: str = None) -> str:
     fallback_chain = [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "llama-3.1-8b-instant",
+        "qwen/qwen3.8-27b",
+        "allam-2-7b",
     ]
     if model_id:
         models_to_try = [model_id] + [m for m in fallback_chain if m != model_id]
@@ -186,7 +185,7 @@ def generate(prompt: str) -> str:
 
 
 def _get_gemini_response_fallback(prompt: str, key: str) -> str:
-    """Fallback through all known working models on both v1 and v1beta."""
+    """Fallback through all known working models on v1beta first, then v1."""
     for model in [
         "gemini-2.0-flash",
         "gemini-2.0-flash-lite",
@@ -197,7 +196,7 @@ def _get_gemini_response_fallback(prompt: str, key: str) -> str:
         "gemini-1.5-pro",
         "gemini-pro",
     ]:
-        for base in [_BASE_URL, _BASE_URL_BETA]:
+        for base in [_BASE_URL_BETA, _BASE_URL]:
             try:
                 return _post_gemini(f"{base}/{model}:generateContent", prompt, key)
             except Exception:

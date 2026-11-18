@@ -32,14 +32,12 @@ CHROMA_PATH = "./knowledge_base/chroma_db"
 # provider: "gemini" uses GEMINI_KEYS rotation; "groq" uses GROQ_API_KEY directly
 AVAILABLE_MODELS = [
     # ── Gemini ────────────────────────────────────────────────────────
-    {"display": "Gemini 2.0 Flash",     "provider": "gemini", "model_id": "gemini-2.0-flash"},
-    {"display": "Gemini 1.5 Flash",     "provider": "gemini", "model_id": "gemini-1.5-flash"},
-    {"display": "Gemini 1.5 Pro",       "provider": "gemini", "model_id": "gemini-1.5-pro"},
-    # ── Groq — OpenAI ─────────────────────────────────────────────────
-    {"display": "GPT-OSS 120B (Groq)",  "provider": "groq",   "model_id": "openai/gpt-oss-120b"},
-    {"display": "GPT-OSS 20B (Groq)",   "provider": "groq",   "model_id": "openai/gpt-oss-20b"},
-    # ── Groq — Meta Llama ─────────────────────────────────────────────
-    {"display": "Llama 3 70B (Groq)",   "provider": "groq",   "model_id": "llama3-70b-8192"},
-    {"display": "Llama 3 8B (Groq)",    "provider": "groq",   "model_id": "llama3-8b-8192"},
-    {"display": "Llama 3.1 8B (Groq)",  "provider": "groq",   "model_id": "llama-3.1-8b-instant"},
+    {"display": "Gemini 2.0 Flash",         "provider": "gemini", "model_id": "gemini-2.0-flash"},
+    {"display": "Gemini 1.5 Flash",         "provider": "gemini", "model_id": "gemini-1.5-flash"},
+    {"display": "Gemini 1.5 Pro",           "provider": "gemini", "model_id": "gemini-1.5-pro"},
+    # ── Groq — models available on this account ───────────────────────
+    {"display": "GPT-OSS 120B (Groq)",      "provider": "groq",   "model_id": "openai/gpt-oss-120b"},
+    {"display": "GPT-OSS 20B (Groq)",       "provider": "groq",   "model_id": "openai/gpt-oss-20b"},
+    {"display": "Qwen 3.8 27B (Groq)",      "provider": "groq",   "model_id": "qwen/qwen3.8-27b"},
+    {"display": "Allam 2 7B (Groq)",        "provider": "groq",   "model_id": "allam-2-7b"},
 ]
