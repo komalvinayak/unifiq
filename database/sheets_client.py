@@ -24,18 +24,25 @@ def _connect():
     2. Streamlit Cloud: reads credentials from st.secrets
 
     Returns the spreadsheet object.
-
-    Creates a connection to Google Sheets.
     """
+    # Permissions we need from Google
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
     ]
 
-    if "gcp_service_account" in st.secrets:
+    # Safely check st.secrets — throws locally when no secrets.toml exists
+    try:
+        has_secrets = "gcp_service_account" in st.secrets
+    except Exception:
+        has_secrets = False
+
+    if has_secrets:
+        # ── Streamlit Cloud: use secrets ─────────────────────────────
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     else:
+        # ── Local development: use JSON file ─────────────────────────
         creds = ServiceAccountCredentials.from_json_keyfile_name(
             GOOGLE_SHEETS_CREDENTIALS, scope
         )
@@ -49,12 +56,6 @@ def get_all_rows(sheet_name: str) -> list:
     """
     Reads all rows from a sheet.
     Returns a list of dictionaries — one dict per row.
-
-    Example return:
-    [
-        {"project_id": "1", "name": "MBA Case", "status": "Active"},
-        {"project_id": "2", "name": "Assignment", "status": "Done"},
-    ]
     """
     try:
         spreadsheet = _connect()
@@ -68,9 +69,6 @@ def get_all_rows(sheet_name: str) -> list:
 def add_row(sheet_name: str, row: list):
     """
     Adds one new row at the bottom of a sheet.
-
-    row must be a list matching the column order.
-    Example: ["P001", "MBA Case Competition", "Active", "2026-12-15"]
     """
     try:
         spreadsheet = _connect()
@@ -90,7 +88,6 @@ def update_row(sheet_name: str, row_number: int, new_values: list):
     try:
         spreadsheet = _connect()
         sheet = spreadsheet.worksheet(sheet_name)
-        # Update the entire row at once
         for col, value in enumerate(new_values, start=1):
             sheet.update_cell(row_number, col, value)
         return True
@@ -117,7 +114,6 @@ def delete_row(sheet_name: str, row_number: int):
 def get_as_dataframe(sheet_name: str) -> pd.DataFrame:
     """
     Reads a sheet and returns it as a pandas DataFrame.
-    Useful for displaying tables and doing analysis.
     """
     rows = get_all_rows(sheet_name)
     if rows:
@@ -128,9 +124,6 @@ def get_as_dataframe(sheet_name: str) -> pd.DataFrame:
 def log_activity(event_type: str, details: str):
     """
     Logs any activity to the command_log sheet.
-    Used by Command Centre to show the activity feed.
-
-    Example: log_activity("Task Added", "Submit report under MBA project")
     """
     from utils.date_utils import now_date_str, now_time_str
     add_row("command_log", [now_date_str(), now_time_str(), event_type, details])

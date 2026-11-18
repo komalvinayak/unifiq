@@ -24,8 +24,10 @@ st.set_page_config(
 # ── IMPORTS ──────────────────────────────────────────────────────────
 from utils.date_utils import now_date_str, now_time_str, greeting
 from ai.gemini_client import get_active_key_name
+from ai.embeddings_client import get_active_key_name as get_embed_key_name
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
+from modules.brain.brain_core import categorize_note, save_note
 
 
 # ── STARTUP: REBUILD CHROMADB ─────────────────────────────────────────
@@ -39,13 +41,14 @@ if "chroma_initialized" not in st.session_state:
             brain_notes = get_all_rows("brain_notes")
             if brain_notes:
                 added = rebuild_from_sheets(brain_notes)
-                # Store init result for sidebar display
                 st.session_state.chroma_note_count = get_note_count()
+                st.session_state.chroma_error = None
             else:
                 st.session_state.chroma_note_count = 0
+                st.session_state.chroma_error = None
         except Exception as e:
-            # Don't crash the whole app if brain init fails
             st.session_state.chroma_note_count = 0
+            st.session_state.chroma_error = str(e)
 
     st.session_state.chroma_initialized = True
 
@@ -103,7 +106,13 @@ with st.sidebar:
 
     # System info
     st.caption("**System Status**")
-    st.write(f"🤖 AI: `{get_active_key_name()}`")
+    ai_key   = get_active_key_name()
+    emb_key  = get_embed_key_name()
+    # Show single line if both use same key, two lines if different
+    if ai_key == emb_key:
+        st.write(f"🤖 AI: `{ai_key}`")
+    else:
+        st.write(f"🤖 AI: `{ai_key}`  ·  Embed: `{emb_key}`")
     note_count = st.session_state.get("chroma_note_count", 0)
     st.write(f"🧠 Brain: `{note_count} notes indexed`")
     if st.session_state.get("chroma_error"):
@@ -114,6 +123,35 @@ with st.sidebar:
             st.rerun()
     st.write(f"📅 `{now_date_str()}`")
     st.write(f"🕐 `{now_time_str()} IST`")
+
+    st.divider()
+
+    # ── QUICK CAPTURE ────────────────────────────────────────────────
+    # Always-visible capture box — zero friction to save a thought
+    st.caption("**⚡ Quick Capture**")
+    quick_note = st.text_area(
+        "Quick thought",
+        placeholder="Type a thought and press Save…",
+        height=80,
+        label_visibility="collapsed",
+        key="sidebar_quick_note"
+    )
+    if st.button("Save 🧠", use_container_width=True, key="sidebar_save_btn"):
+        if quick_note.strip():
+            with st.spinner("Saving…"):
+                try:
+                    category = categorize_note(quick_note.strip())
+                    save_note(quick_note.strip(), category)
+                    st.session_state.chroma_note_count = get_note_count()
+                    st.session_state.pop("brain_notes_cache", None)
+                    st.success(f"✅ {category}")
+                    # Clear the box by resetting the key
+                    st.session_state.sidebar_quick_note = ""
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+        else:
+            st.warning("Write something first.")
 
 
 # ── PAGE ROUTING ─────────────────────────────────────────────────────

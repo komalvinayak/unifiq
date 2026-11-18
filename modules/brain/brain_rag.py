@@ -12,8 +12,10 @@
 
 import streamlit as st
 from ai.embeddings_client import get_query_embedding
-from database.chroma_client import search_similar_notes
+from database.chroma_client import search_similar_notes_with_scores
 from ai.gemini_client import generate
+
+_MAX_HISTORY = 5
 
 
 def rag_answer(question: str) -> tuple:
@@ -22,24 +24,18 @@ def rag_answer(question: str) -> tuple:
 
     Returns:
         answer (str): Gemini's answer based on your notes
-        sources (list): The notes that were used to answer
-
-    How it works (3 steps):
+        sources (list): (text, score) tuples — notes used, with similarity %
     """
 
     # ── STEP 1: RETRIEVE ─────────────────────────────────────────────
-    # Convert the question into a vector (768 numbers)
-    # Then find the 5 most similar note vectors in ChromaDB
     question_vector = get_query_embedding(question)
-    similar_notes = search_similar_notes(question_vector, n_results=5)
+    scored_notes = search_similar_notes_with_scores(question_vector, n_results=5)
 
-    if not similar_notes:
+    if not scored_notes:
         return "I haven't found any related notes in your brain yet. Add some notes first!", []
 
     # ── STEP 2: AUGMENT ──────────────────────────────────────────────
-    # Build a prompt that includes the retrieved notes as context
-    # This is what "augmented" means — we augment the question with context
-    context = "\n\n".join([f"Note {i+1}: {note}" for i, note in enumerate(similar_notes)])
+    context = "\n\n".join([f"Note {i+1}: {note}" for i, (note, _) in enumerate(scored_notes)])
 
     prompt = f"""You are UNIFIQ Brain — a personal assistant that helps the user
 understand their own thoughts and knowledge.
@@ -56,11 +52,18 @@ Be concise and helpful. Write as if you are summarizing their own thinking back 
 """
 
     # ── STEP 3: GENERATE ─────────────────────────────────────────────
-    # Send the augmented prompt to Gemini
-    # Gemini answers using the retrieved notes as context
     answer = generate(prompt)
 
-    return answer, similar_notes
+    return answer, scored_notes
+
+
+def _add_to_history(question: str):
+    """Keeps a rolling list of the last 5 unique questions asked."""
+    history = st.session_state.get("brain_search_history", [])
+    if question in history:
+        history.remove(question)
+    history.insert(0, question)
+    st.session_state.brain_search_history = history[:_MAX_HISTORY]
 
 
 def ask_brain():
@@ -71,23 +74,42 @@ def ask_brain():
     st.subheader("Ask Your Brain")
     st.caption("Ask anything you've written about. UNIFIQ finds your relevant notes and answers.")
 
-    # Show question examples
-    st.write("**Try asking:**")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("What do I know about leadership?"):
-            st.session_state.brain_question = "What do I know about leadership?"
-        if st.button("What are my thoughts on productivity?"):
-            st.session_state.brain_question = "What are my thoughts on productivity?"
-    with col2:
-        if st.button("What have I learned about finance?"):
-            st.session_state.brain_question = "What have I learned about finance?"
-        if st.button("What are my recent work notes?"):
-            st.session_state.brain_question = "What are my recent work notes?"
+    # ── SEARCH HISTORY ────────────────────────────────────────────────
+    history = st.session_state.get("brain_search_history", [])
+    if history:
+        st.write("**Recent questions:**")
+        history_cols = st.columns(min(len(history), 3))
+        for i, past_q in enumerate(history[:3]):
+            if history_cols[i].button(f"🕐 {past_q[:35]}…" if len(past_q) > 35 else f"🕐 {past_q}",
+                                      key=f"hist_{i}", use_container_width=True):
+                st.session_state.brain_question = past_q
+                st.rerun()
+        if len(history) > 3:
+            more_cols = st.columns(len(history) - 3)
+            for i, past_q in enumerate(history[3:]):
+                if more_cols[i].button(f"🕐 {past_q[:35]}…" if len(past_q) > 35 else f"🕐 {past_q}",
+                                       key=f"hist_extra_{i}", use_container_width=True):
+                    st.session_state.brain_question = past_q
+                    st.rerun()
+        st.divider()
 
-    st.divider()
+    # ── EXAMPLE PROMPTS ───────────────────────────────────────────────
+    if not history:
+        st.write("**Try asking:**")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("What do I know about leadership?"):
+                st.session_state.brain_question = "What do I know about leadership?"
+            if st.button("What are my thoughts on productivity?"):
+                st.session_state.brain_question = "What are my thoughts on productivity?"
+        with col2:
+            if st.button("What have I learned about finance?"):
+                st.session_state.brain_question = "What have I learned about finance?"
+            if st.button("What are my recent work notes?"):
+                st.session_state.brain_question = "What are my recent work notes?"
+        st.divider()
 
-    # Question input
+    # ── QUESTION INPUT ────────────────────────────────────────────────
     question = st.text_input(
         "Your question",
         value=st.session_state.get("brain_question", ""),
@@ -102,17 +124,29 @@ def ask_brain():
         with st.spinner("Searching your brain..."):
             try:
                 answer, sources = rag_answer(question)
+                _add_to_history(question)
+                # Clear so the input doesn't stay pre-filled after a rerun
+                st.session_state.pop("brain_question", None)
 
-                # Show the answer
+                # ── ANSWER ────────────────────────────────────────────
                 st.markdown("### Answer")
                 st.write(answer)
 
-                # Show which notes were used
+                # ── SOURCES WITH SIMILARITY SCORES ───────────────────
                 if sources:
                     st.divider()
                     st.markdown("**📌 Notes used to answer this:**")
-                    for i, note in enumerate(sources, 1):
-                        with st.expander(f"Source {i}: {note[:60]}..."):
+                    for i, (note, score) in enumerate(sources, 1):
+                        pct = int(score * 100)
+                        # Score badge colour: green ≥80, amber ≥60, grey otherwise
+                        if pct >= 80:
+                            badge = f"🟢 {pct}% match"
+                        elif pct >= 60:
+                            badge = f"🟡 {pct}% match"
+                        else:
+                            badge = f"⚪ {pct}% match"
+
+                        with st.expander(f"Source {i}  {badge}  — {note[:55]}…" if len(note) > 55 else f"Source {i}  {badge}  — {note}"):
                             st.write(note)
 
             except Exception as e:

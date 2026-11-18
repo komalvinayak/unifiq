@@ -1,30 +1,21 @@
-# ── settings.py ──────────────────────────────────────────────────────
 import os
-import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def _get(key, default=""):
-    """Read from st.secrets first, then .env"""
-    try:
-        return st.secrets[key]
-    except Exception:
-        return os.getenv(key, default)
-
 # ── GEMINI KEYS ──────────────────────────────────────────────────────
 GEMINI_KEYS = []
 for i in range(1, 6):
-    key = _get(f"GEMINI_KEY_{i}")
+    key = os.getenv(f"GEMINI_KEY_{i}")
     if key:
         GEMINI_KEYS.append(key)
 
 # ── GROQ KEY ─────────────────────────────────────────────────────────
-GROQ_API_KEY = _get("GROQ_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # ── GOOGLE SHEETS ────────────────────────────────────────────────────
-GOOGLE_SHEETS_CREDENTIALS = _get("GOOGLE_SHEETS_CREDENTIALS", "sheets_creds.json")
-SPREADSHEET_NAME = _get("SPREADSHEET_NAME", "unifiq-db")
+GOOGLE_SHEETS_CREDENTIALS = os.getenv("GOOGLE_SHEETS_CREDENTIALS", "sheets_creds.json")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "unifiq-db")
 
 # ── APP CONSTANTS ────────────────────────────────────────────────────
 BRAIN_CATEGORIES = ["Work", "Learning", "Personal", "Technical", "Career"]
