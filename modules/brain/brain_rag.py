@@ -15,8 +15,6 @@ from ai.embeddings_client import get_query_embedding
 from database.chroma_client import search_similar_notes_with_scores
 from ai.gemini_client import generate
 
-_MAX_HISTORY = 5
-
 
 def rag_answer(question: str) -> tuple:
     """
@@ -67,104 +65,92 @@ Be concise and helpful. Write as if you are summarizing their own thinking back 
     return answer, scored_notes
 
 
-def _add_to_history(question: str):
-    """Keeps a rolling list of the last 5 unique questions asked."""
-    history = st.session_state.get("brain_search_history", [])
-    if question in history:
-        history.remove(question)
-    history.insert(0, question)
-    st.session_state.brain_search_history = history[:_MAX_HISTORY]
+def _render_sources(sources: list):
+    """Renders source notes as compact expanders inside a chat bubble."""
+    if not sources:
+        return
+    st.caption("📌 **Sources from your notes:**")
+    for i, (note, score) in enumerate(sources, 1):
+        pct = int(score * 100)
+        badge = "🟢" if pct >= 80 else "🟡" if pct >= 60 else "⚪"
+        label = f"{badge} {pct}%  —  {note[:60]}…" if len(note) > 60 else f"{badge} {pct}%  —  {note}"
+        with st.expander(label, expanded=False):
+            st.write(note)
 
 
 def ask_brain():
     """
-    Renders the Ask My Brain UI in Streamlit.
+    Renders the Ask My Brain chatbot UI.
     Called from brain_core.py tab 3.
     """
-    st.subheader("Ask Your Brain")
-    st.caption("Ask anything you've written about. UNIFIQ finds your relevant notes and answers.")
+    st.subheader("🧠 Ask Your Brain")
+    st.caption("Type anything — a keyword, topic, date, or question. Your brain will find the most relevant notes.")
 
-    # ── SEARCH HISTORY ────────────────────────────────────────────────
-    history = st.session_state.get("brain_search_history", [])
-    if history:
-        st.write("**Recent questions:**")
-        history_cols = st.columns(min(len(history), 3))
-        for i, past_q in enumerate(history[:3]):
-            if history_cols[i].button(f"🕐 {past_q[:35]}…" if len(past_q) > 35 else f"🕐 {past_q}",
-                                      key=f"hist_{i}", use_container_width=True):
-                st.session_state.brain_question = past_q
+    # ── INIT CHAT HISTORY ────────────────────────────────────────────
+    if "brain_chat" not in st.session_state:
+        st.session_state.brain_chat = []  # list of {role, content, sources}
+
+    # ── STARTER CHIPS (shown only when chat is empty) ─────────────────
+    if not st.session_state.brain_chat:
+        st.markdown("**Try asking:**")
+        chips = [
+            "What do I know about RAG?",
+            "Show my cybersecurity notes",
+            "What have I written about productivity?",
+            "Summarise my learning notes",
+        ]
+        cols = st.columns(2)
+        for i, chip in enumerate(chips):
+            if cols[i % 2].button(chip, key=f"chip_{i}", use_container_width=True):
+                st.session_state.brain_chat_input = chip
                 st.rerun()
-        if len(history) > 3:
-            more_cols = st.columns(len(history) - 3)
-            for i, past_q in enumerate(history[3:]):
-                if more_cols[i].button(f"🕐 {past_q[:35]}…" if len(past_q) > 35 else f"🕐 {past_q}",
-                                       key=f"hist_extra_{i}", use_container_width=True):
-                    st.session_state.brain_question = past_q
-                    st.rerun()
-        st.divider()
 
-    # ── EXAMPLE PROMPTS ───────────────────────────────────────────────
-    if not history:
-        st.write("**Try asking:**")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("What do I know about leadership?"):
-                st.session_state.brain_question = "What do I know about leadership?"
-            if st.button("What are my thoughts on productivity?"):
-                st.session_state.brain_question = "What are my thoughts on productivity?"
-        with col2:
-            if st.button("What have I learned about finance?"):
-                st.session_state.brain_question = "What have I learned about finance?"
-            if st.button("What are my recent work notes?"):
-                st.session_state.brain_question = "What are my recent work notes?"
-        st.divider()
+    # ── RENDER CHAT HISTORY ───────────────────────────────────────────
+    for msg in st.session_state.brain_chat:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg["role"] == "assistant" and msg.get("sources"):
+                _render_sources(msg["sources"])
 
-    # ── QUESTION INPUT ────────────────────────────────────────────────
-    question = st.text_input(
-        "Your question",
-        value=st.session_state.get("brain_question", ""),
-        placeholder="e.g. What have I written about time management?"
+    # ── CHAT INPUT ────────────────────────────────────────────────────
+    # Pre-fill from chip click or sidebar quick-ask
+    prefill = st.session_state.pop("brain_chat_input", None)
+
+    prompt = st.chat_input(
+        "Ask anything — keyword, topic, date, question…",
+        key="brain_chat_input_box",
     )
 
-    if st.button("Ask 🔍", type="primary"):
-        if not question.strip():
-            st.warning("Please type a question.")
-            return
+    # Accept from either the chat_input widget or a chip button
+    question = prompt or prefill
+    if not question:
+        return
 
-        with st.spinner("Searching your brain..."):
+    # Show user bubble immediately
+    st.session_state.brain_chat.append({"role": "user", "content": question, "sources": []})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    # Run RAG and stream assistant bubble
+    with st.chat_message("assistant"):
+        with st.spinner("Searching your brain…"):
             try:
                 answer, sources = rag_answer(question)
-                _add_to_history(question)
-                # Store result in session_state so it survives the rerun below
-                st.session_state.brain_last_answer = answer
-                st.session_state.brain_last_sources = sources
-                st.session_state.brain_last_question = question
-                st.session_state.pop("brain_question", None)
-                st.rerun()
-
             except Exception as e:
-                st.error(f"Could not search brain: {e}")
-                st.info("Make sure you have added some notes first.")
+                answer = f"❌ Could not search brain: {e}"
+                sources = []
 
-    # ── DISPLAY LAST ANSWER (persists across reruns) ──────────────────
-    if "brain_last_answer" in st.session_state:
-        st.divider()
-        st.markdown(f"**Q: {st.session_state.brain_last_question}**")
-        st.markdown("### Answer")
-        st.write(st.session_state.brain_last_answer)
+        st.markdown(answer)
+        _render_sources(sources)
 
-        sources = st.session_state.get("brain_last_sources", [])
-        if sources:
-            st.divider()
-            st.markdown("**📌 Notes used to answer this:**")
-            for i, (note, score) in enumerate(sources, 1):
-                pct = int(score * 100)
-                if pct >= 80:
-                    badge = f"🟢 {pct}% match"
-                elif pct >= 60:
-                    badge = f"🟡 {pct}% match"
-                else:
-                    badge = f"⚪ {pct}% match"
+    st.session_state.brain_chat.append({
+        "role": "assistant",
+        "content": answer,
+        "sources": sources,
+    })
 
-                with st.expander(f"Source {i}  {badge}  — {note[:55]}…" if len(note) > 55 else f"Source {i}  {badge}  — {note}"):
-                    st.write(note)
+    # ── CLEAR BUTTON ─────────────────────────────────────────────────
+    if st.session_state.brain_chat:
+        if st.button("🗑 Clear chat", key="clear_brain_chat"):
+            st.session_state.brain_chat = []
+            st.rerun()
