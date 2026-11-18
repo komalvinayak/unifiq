@@ -20,11 +20,14 @@ def categorize_note(text: str) -> str:
     """
     prompt = f"""
 You are categorizing a personal note.
-Choose exactly ONE category from: Work, Learning, Personal.
 
-Work = projects, tasks, goals, professional things
-Learning = study notes, books, courses, concepts, ideas
-Personal = thoughts, feelings, daily life, habits, reflection
+Choose exactly ONE category from: Work, Learning, Personal, Technical, Career.
+
+Work = projects, tasks, goals, professional things, MBA coursework
+Learning = study notes, books, business concepts, frameworks like Porter's, BCG, SWOT
+Technical = programming, AI, ML, databases, APIs, RAG, ChromaDB, Python, code
+Career = interview prep, job search, networking, resume, placement, goals
+Personal = personal thoughts, habits, life reflections, routines
 
 Note: "{text}"
 
@@ -152,8 +155,7 @@ def show():
         for note in reversed(filtered):  # newest first
             cat = note.get("category", "Personal")
             # Color emoji per category
-            cat_emoji = {"Work": "💼", "Learning": "📚", "Personal": "🌱"}.get(cat, "📝")
-
+            cat_emoji = {"Work": "💼", "Learning": "📚", "Personal": "🌱", "Technical": "💻", "Career": "🎯"}.get(cat, "📝")
             with st.expander(
                 f"{cat_emoji} {note.get('content', '')[:60]}... — {note.get('date', '')}",
                 expanded=False

@@ -106,6 +106,12 @@ with st.sidebar:
     st.write(f"🤖 AI: `{get_active_key_name()}`")
     note_count = st.session_state.get("chroma_note_count", 0)
     st.write(f"🧠 Brain: `{note_count} notes indexed`")
+    if st.session_state.get("chroma_error"):
+        st.error(f"⚠️ Brain index error: {st.session_state.chroma_error}")
+    if note_count == 0:
+        if st.button("🔄 Rebuild Brain Index"):
+            st.session_state.pop("chroma_initialized", None)
+            st.rerun()
     st.write(f"📅 `{now_date_str()}`")
     st.write(f"🕐 `{now_time_str()} IST`")
 
