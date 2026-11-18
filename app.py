@@ -1,4 +1,4 @@
-# ── app.py ────────────────────────────────────────────────────────────
+# ── app.py ───────────────────────────────────────────────────────────
 # UNIFIQ — Unified Intelligence
 # Main entry point for the Streamlit app.
 #

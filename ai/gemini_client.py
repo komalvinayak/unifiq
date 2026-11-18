@@ -34,7 +34,7 @@ def _post_gemini(url: str, prompt: str, key: str) -> str:
         url, json=body,
         params={"key": key},
         headers={"Content-Type": "application/json"},
-        timeout=30,
+        timeout=8,
     )
     r.raise_for_status()
     return r.json()["candidates"][0]["content"]["parts"][0]["text"]
