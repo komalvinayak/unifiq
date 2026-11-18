@@ -132,3 +132,10 @@ def get_active_key_name() -> str:
     if GEMINI_KEYS:
         return f"Gemini Key {_current_key_index + 1}"
     return "No key"
+
+
+def set_key_index(index: int):
+    """Sync the embed key to match the user's AI key selection."""
+    global _current_key_index
+    if 0 <= index < len(GEMINI_KEYS):
+        _current_key_index = index

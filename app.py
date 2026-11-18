@@ -24,7 +24,7 @@ st.set_page_config(
 # ── IMPORTS ──────────────────────────────────────────────────────────
 from utils.date_utils import now_date_str, now_time_str, greeting
 from ai.gemini_client import get_active_key_name, get_key_index, set_key_index, get_last_error
-from ai.embeddings_client import get_active_key_name as get_embed_key_name
+from ai.embeddings_client import get_active_key_name as get_embed_key_name, set_key_index as set_embed_key_index
 from config.settings import GEMINI_KEYS, GROQ_API_KEY
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
@@ -119,9 +119,7 @@ with st.sidebar:
             key="sidebar_ai_key_select",
         )
         set_key_index(selected_idx)
-        emb_key = get_embed_key_name()
-        if emb_key != key_options[selected_idx]:
-            st.caption(f"Embed: `{emb_key}`")
+        set_embed_key_index(selected_idx)
         if GROQ_API_KEY:
             st.caption("Groq available as auto-fallback")
     else:
