@@ -26,26 +26,15 @@ def _connect():
     Returns the spreadsheet object.
     """
     # Permissions we need from Google
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
-    try:
-        # ── Try Streamlit Cloud secrets first ────────────────────────
-        # On Streamlit Cloud, credentials are stored in secrets.toml
-        creds_dict = st.secrets["gcp_service_account"]
+    if "gcp_service_account" in st.secrets:
+        # ── Streamlit Cloud: use secrets ─────────────────────────────
+        creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    except Exception:
-        # ── Fall back to local JSON file ─────────────────────────────
-        # On your laptop, credentials are in sheets_creds.json
+    else:
+        # ── Local development: use JSON file ─────────────────────────
         creds = ServiceAccountCredentials.from_json_keyfile_name(
             GOOGLE_SHEETS_CREDENTIALS, scope
         )
-
-    client = gspread.authorize(creds)
-    spreadsheet = client.open(SPREADSHEET_NAME)
-    return spreadsheet
 
 
 def get_all_rows(sheet_name: str) -> list:
