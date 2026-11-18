@@ -23,9 +23,9 @@ st.set_page_config(
 
 # ── IMPORTS ──────────────────────────────────────────────────────────
 from utils.date_utils import now_date_str, now_time_str, greeting
-from ai.gemini_client import get_active_key_name, get_key_index, set_key_index, get_last_error
+from ai.gemini_client import get_active_key_name, get_key_index, set_key_index, get_last_error, set_model, get_model_index, get_selected_model_display
 from ai.embeddings_client import get_active_key_name as get_embed_key_name, set_key_index as set_embed_key_index
-from config.settings import GEMINI_KEYS, GROQ_API_KEY
+from config.settings import GEMINI_KEYS, GROQ_API_KEY, AVAILABLE_MODELS
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
 from modules.brain.brain_core import categorize_note, save_note
@@ -121,22 +121,34 @@ with st.sidebar:
     # System info
     st.caption("**System Status**")
 
-    # Key selector — lets user pick which Gemini key to use
-    if GEMINI_KEYS:
-        key_options = [f"Gemini Key {i + 1}" for i in range(len(GEMINI_KEYS))]
-        selected_idx = st.selectbox(
-            "🤖 AI Key",
-            options=list(range(len(GEMINI_KEYS))),
-            format_func=lambda i: key_options[i],
-            index=get_key_index(),
-            key="sidebar_ai_key_select",
+    # Model selector — shows all available models; filters to only those with keys configured
+    _avail = [
+        (i, m) for i, m in enumerate(AVAILABLE_MODELS)
+        if (m["provider"] == "gemini" and GEMINI_KEYS)
+        or (m["provider"] == "groq" and GROQ_API_KEY)
+    ]
+    if _avail:
+        _avail_indices = [i for i, _ in _avail]
+        _avail_labels  = {i: m["display"] for i, m in _avail}
+        _cur_model_idx = get_model_index()
+        # If current selection is no longer available, reset to first available
+        if _cur_model_idx not in _avail_indices:
+            _cur_model_idx = _avail_indices[0]
+        selected_model_idx = st.selectbox(
+            "🤖 AI Model",
+            options=_avail_indices,
+            format_func=lambda i: _avail_labels[i],
+            index=_avail_indices.index(_cur_model_idx),
+            key="sidebar_ai_model_select",
         )
-        set_key_index(selected_idx)
-        set_embed_key_index(selected_idx)
-        if GROQ_API_KEY:
-            st.caption("Groq available as auto-fallback")
+        set_model(selected_model_idx)
+        # Also sync Gemini key index for embedding (use key 0 by default for Groq models)
+        selected_model = AVAILABLE_MODELS[selected_model_idx]
+        if selected_model["provider"] == "gemini" and GEMINI_KEYS:
+            set_key_index(get_key_index())   # keep current key rotation
+        set_embed_key_index(0 if selected_model["provider"] == "groq" else get_key_index())
     else:
-        st.write(f"🤖 AI: `{get_active_key_name()}`")
+        st.write("🤖 AI: No keys configured")
     note_count = st.session_state.get("chroma_note_count", 0)
     st.write(f"🧠 Brain: `{note_count} notes indexed`")
     if st.session_state.get("chroma_error"):
