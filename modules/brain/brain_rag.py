@@ -54,6 +54,16 @@ Be concise and helpful. Write as if you are summarizing their own thinking back 
     # ── STEP 3: GENERATE ─────────────────────────────────────────────
     answer = generate(prompt)
 
+    # Graceful degradation: if all AI providers are down, still show retrieved notes
+    if "ai is temporarily unavailable" in answer.lower() and scored_notes:
+        note_lines = "\n\n".join(
+            f"**Note {i+1}:** {note}" for i, (note, _) in enumerate(scored_notes)
+        )
+        answer = (
+            f"⚠️ AI is offline right now — here are your most relevant notes "
+            f"for **\"{question}\"**:\n\n{note_lines}"
+        )
+
     return answer, scored_notes
 
 
