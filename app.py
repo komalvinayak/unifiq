@@ -1,47 +1,32 @@
 # ── app.py ───────────────────────────────────────────────────────────
-# UNIFIQ — Unified Intelligence
-# Main entry point for the Streamlit app.
-#
-# What this file does:
-# 1. Sets up the page (title, icon, layout)
-# 2. Builds the sidebar navigation
-# 3. On first load — rebuilds ChromaDB from Google Sheets (hybrid persistence)
-# 4. Renders whichever module the user has selected
-#
-# To run: streamlit run app.py
+# Mufakkir — "Ctrl+F for your brain."
 # ─────────────────────────────────────────────────────────────────────
 
 import streamlit as st
 
-# ── PAGE CONFIG (must be first Streamlit call) ────────────────────────
 st.set_page_config(
-    page_title="UNIFIQ",
-    page_icon="⚡",
+    page_title="Mufakkir",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ── IMPORTS ──────────────────────────────────────────────────────────
-from utils.date_utils import now_date_str, now_time_str, greeting
-from ai.gemini_client import get_active_key_name, get_key_index, set_key_index, get_last_error, set_model, get_model_index, get_selected_model_display
-from ai.embeddings_client import get_active_key_name as get_embed_key_name, set_key_index as set_embed_key_index
+from utils.date_utils import now_date_str, now_time_str
+from ai.gemini_client import get_last_error, set_model, get_model_index, get_selected_model_display
+from ai.embeddings_client import set_key_index as set_embed_key_index
 from config.settings import GEMINI_KEYS, GROQ_API_KEY, AVAILABLE_MODELS
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
 from modules.brain.brain_core import categorize_note, save_note
 
 
-# ── STARTUP: REBUILD CHROMADB ─────────────────────────────────────────
-# This runs once per session (when the app first loads).
-# ChromaDB can be wiped on Streamlit Cloud restarts.
-# We rebuild it from Google Sheets so brain search always works.
-
+# ── STARTUP ──────────────────────────────────────────────────────────
 if "chroma_initialized" not in st.session_state:
-    with st.spinner("Initializing UNIFIQ Brain..."):
+    with st.spinner("Loading Mufakkir…"):
         try:
             brain_notes = get_all_rows("brain_notes")
             if brain_notes:
-                added = rebuild_from_sheets(brain_notes)
+                rebuild_from_sheets(brain_notes)
                 st.session_state.chroma_note_count = get_note_count()
                 st.session_state.chroma_error = None
             else:
@@ -50,78 +35,120 @@ if "chroma_initialized" not in st.session_state:
         except Exception as e:
             st.session_state.chroma_note_count = 0
             st.session_state.chroma_error = str(e)
-
     st.session_state.chroma_initialized = True
 
 
-# ── CUSTOM STYLES ────────────────────────────────────────────────────
-# Minimal CSS to make it look cleaner
+# ── LIGHT NOTION THEME ───────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Sidebar title */
-    .sidebar-title {
-        font-size: 22px;
-        font-weight: 700;
-        color: #E2E8F0;
-        margin-bottom: 4px;
-    }
-    .sidebar-sub {
-        font-size: 11px;
-        color: #94A3B8;
-        margin-bottom: 20px;
-    }
-    /* Remove default top padding */
-    .block-container {
-        padding-top: 1.5rem;
-    }
-    /* Metric card styling */
-    [data-testid="stMetric"] {
-        background: rgba(255,255,255,0.03);
-        border-radius: 8px;
-        padding: 10px;
-        border: 1px solid rgba(255,255,255,0.08);
-    }
+/* ── Global ── */
+html, body, [data-testid="stAppViewContainer"],
+[data-testid="stMain"], .main {
+    background: #FFFFFF !important;
+    color: #1E1E2E !important;
+}
+[data-testid="stSidebar"] {
+    background: #F8F9FA !important;
+    border-right: 1px solid #E5E7EB;
+}
+/* Remove default top padding */
+.block-container { padding-top: 1.5rem; }
+
+/* ── Typography ── */
+h1,h2,h3,h4,h5,h6 { color: #1E1E2E !important; }
+p, label, .stMarkdown { color: #374151 !important; }
+
+/* ── Buttons ── */
+.stButton > button {
+    border-radius: 8px !important;
+    font-weight: 500 !important;
+    border: 1px solid #E5E7EB !important;
+    background: #FFFFFF !important;
+    color: #1E1E2E !important;
+    transition: all 0.15s ease;
+}
+.stButton > button[kind="primary"] {
+    background: #4F46E5 !important;
+    color: #FFFFFF !important;
+    border-color: #4F46E5 !important;
+}
+.stButton > button:hover {
+    border-color: #4F46E5 !important;
+    color: #4F46E5 !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #4338CA !important;
+    color: #FFFFFF !important;
+}
+
+/* ── Inputs ── */
+.stTextInput input, .stTextArea textarea,
+.stSelectbox > div > div {
+    background: #FFFFFF !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 8px !important;
+    color: #1E1E2E !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+    border-color: #4F46E5 !important;
+    box-shadow: 0 0 0 3px rgba(79,70,229,0.1) !important;
+}
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab"] {
+    color: #6B7280 !important;
+    font-weight: 500;
+}
+.stTabs [aria-selected="true"] {
+    color: #4F46E5 !important;
+    border-bottom-color: #4F46E5 !important;
+}
+
+/* ── Metrics ── */
+[data-testid="stMetric"] {
+    background: #F8F9FA !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 10px !important;
+    padding: 12px !important;
+}
+[data-testid="stMetricValue"] { color: #1E1E2E !important; }
+[data-testid="stMetricLabel"] { color: #6B7280 !important; }
+
+/* ── Expanders ── */
+details summary {
+    color: #1E1E2E !important;
+    background: #F8F9FA !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 8px !important;
+    padding: 8px 12px !important;
+}
+
+/* ── Divider ── */
+hr { border-color: #E5E7EB !important; }
+
+/* ── Sidebar caption ── */
+.stSidebar .stCaption { color: #6B7280 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ── SIDEBAR ──────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('''
-<div style="
-    display:inline-block;
-    background:#0a0a0a;
-    color:#ffffff;
-    font-size:18px;
-    font-weight:800;
-    letter-spacing:2px;
-    padding:7px 16px;
-    border-radius:8px;
-    margin-bottom:4px;
-    border:1px solid #2d2d2d;
-">⚡ UNIFIQ</div>
-<div style="font-size:11px;color:#94A3B8;margin-top:4px;margin-bottom:16px;padding-left:2px;">Unified Intelligence</div>
-''', unsafe_allow_html=True)
+    # Logo + title
+    st.markdown("""
+<div style="margin-bottom:4px;">
+  <span style="font-size:26px;font-weight:800;color:#1E1E2E;letter-spacing:-0.5px;">🧠 Mufakkir</span>
+</div>
+<div style="font-size:12px;color:#6B7280;margin-bottom:16px;font-style:italic;">
+  Ctrl+F for your brain.
+</div>
+""", unsafe_allow_html=True)
 
     st.divider()
 
-    # Navigation
-    page = st.radio(
-        "Navigate",
-        options=[
-            "🏠 Command Centre",
-            "📋 Project & Task Manager",
-            "🧠 UNIFIQ Brain",
-        ],
-        label_visibility="collapsed"
-    )
-
-    st.divider()
-
-    # System info
+    # System Status
     st.caption("**System Status**")
 
-    # Model selector — shows all available models; filters to only those with keys configured
     _avail = [
         (i, m) for i, m in enumerate(AVAILABLE_MODELS)
         if (m["provider"] == "gemini" and GEMINI_KEYS)
@@ -131,7 +158,6 @@ with st.sidebar:
         _avail_indices = [i for i, _ in _avail]
         _avail_labels  = {i: m["display"] for i, m in _avail}
         _cur_model_idx = get_model_index()
-        # If current selection is no longer available, reset to first available
         if _cur_model_idx not in _avail_indices:
             _cur_model_idx = _avail_indices[0]
         selected_model_idx = st.selectbox(
@@ -142,32 +168,31 @@ with st.sidebar:
             key="sidebar_ai_model_select",
         )
         set_model(selected_model_idx)
-        # Also sync Gemini key index for embedding (use key 0 by default for Groq models)
         selected_model = AVAILABLE_MODELS[selected_model_idx]
-        if selected_model["provider"] == "gemini" and GEMINI_KEYS:
-            set_key_index(get_key_index())   # keep current key rotation
-        set_embed_key_index(0 if selected_model["provider"] == "groq" else get_key_index())
+        set_embed_key_index(0 if selected_model["provider"] == "groq" else 0)
     else:
         st.write("🤖 AI: No keys configured")
+
     note_count = st.session_state.get("chroma_note_count", 0)
-    st.write(f"🧠 Brain: `{note_count} notes indexed`")
+    st.write(f"🧠 `{note_count} notes indexed`")
+
     if st.session_state.get("chroma_error"):
-        st.error(f"⚠️ Brain index error: {st.session_state.chroma_error}")
+        st.error(f"⚠️ {st.session_state.chroma_error}")
+
     ai_err = get_last_error()
     if ai_err:
         with st.expander("⚠️ AI error details"):
             st.code(ai_err, language=None)
+
     if note_count == 0:
-        if st.button("🔄 Rebuild Brain Index"):
+        if st.button("🔄 Rebuild Index"):
             st.session_state.pop("chroma_initialized", None)
             st.rerun()
-    st.write(f"📅 `{now_date_str()}`")
-    st.write(f"🕐 `{now_time_str()} IST`")
 
+    st.write(f"📅 `{now_date_str()}`  🕐 `{now_time_str()} IST`")
     st.divider()
 
-    # ── QUICK CAPTURE ────────────────────────────────────────────────
-    # Always-visible capture box — zero friction to save a thought
+    # Quick Capture
     st.caption("**⚡ Quick Capture**")
     quick_note = st.text_area(
         "Quick thought",
@@ -176,7 +201,7 @@ with st.sidebar:
         label_visibility="collapsed",
         key="sidebar_quick_note"
     )
-    if st.button("Save 🧠", use_container_width=True, key="sidebar_save_btn"):
+    if st.button("Save 🧠", use_container_width=True, key="sidebar_save_btn", type="primary"):
         if quick_note.strip():
             with st.spinner("Saving…"):
                 try:
@@ -185,7 +210,6 @@ with st.sidebar:
                     st.session_state.chroma_note_count = get_note_count()
                     st.session_state.pop("brain_notes_cache", None)
                     st.success(f"✅ {category}")
-                    # Clear the box by resetting the key
                     st.session_state.sidebar_quick_note = ""
                     st.rerun()
                 except Exception as e:
@@ -194,29 +218,6 @@ with st.sidebar:
             st.warning("Write something first.")
 
 
-# ── PAGE ROUTING ─────────────────────────────────────────────────────
-# Based on what user clicked in sidebar, show the right module
-
-if page == "🏠 Command Centre":
-    from modules.command_centre import show
-    show()
-
-elif page == "📋 Project & Task Manager":
-    from modules.project_task_manager import show
-    show()
-
-elif page == "🧠 UNIFIQ Brain":
-    from modules.brain.brain_core import show
-
-    # Add brain map as a separate section below
-    show()
-
-    st.divider()
-
-    # Brain Map (visual knowledge graph)
-    st.subheader("🗺️ Brain Map")
-    st.caption("Visual map of all your notes. Similar thoughts are connected.")
-
-    if st.button("Show Brain Map", use_container_width=True):
-        from modules.brain.brain_map import render_map
-        render_map()
+# ── MAIN ─────────────────────────────────────────────────────────────
+from modules.brain.brain_core import show
+show()

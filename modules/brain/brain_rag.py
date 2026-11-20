@@ -1,52 +1,109 @@
 # ── brain_rag.py ─────────────────────────────────────────────────────
-# The "Ask My Brain" feature — Manual RAG Pipeline
-#
-# RAG = Retrieve, Augment, Generate
-#
-# Step 1 — RETRIEVE:  Convert question to vector → find similar notes
-# Step 2 — AUGMENT:   Add those notes as context to the prompt
-# Step 3 — GENERATE:  Gemini answers using ONLY your notes as context
+# Ask My Brain — semantic search + category/date/keyword filters.
 # ─────────────────────────────────────────────────────────────────────
 
+import datetime
 import streamlit as st
 from ai.embeddings_client import get_query_embedding
 from database.chroma_client import search_similar_notes_with_scores
+from database.sheets_client import get_all_rows
 from ai.gemini_client import generate
+from utils.date_utils import now_ist
+from config.settings import BRAIN_CATEGORIES
 
-_MAX_HISTORY = 10
+_MAX_HISTORY = 15
+
+CAT_EMOJI = {
+    "Work": "💼", "Learning": "📚", "Personal": "🌱",
+    "Technical": "💻", "Career": "🎯",
+}
+_CAT_COLOR = {
+    "Work": "#4F46E5", "Learning": "#16A34A", "Personal": "#D97706",
+    "Technical": "#7C3AED", "Career": "#DC2626",
+}
 
 
-def rag_answer(question: str) -> tuple:
+def _parse_note_date(raw: str):
+    for fmt in ("%d %b %Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.datetime.strptime(str(raw).strip(), fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def rag_answer(question: str, cat_filter: str = "All",
+               date_from=None, date_to=None,
+               keyword: str = "") -> tuple:
     """
-    Full RAG pipeline. Returns (answer, [(note_text, score), ...]).
+    Full RAG pipeline with optional filters.
+    Returns (answer, [(note_dict, score), ...])
+    where note_dict has content, category, date, time.
     """
+    # Get all notes from cache for metadata lookup
+    all_notes = st.session_state.get("brain_notes_cache") or get_all_rows("brain_notes")
+
+    # Semantic search
     question_vector = get_query_embedding(question)
-    scored_notes = search_similar_notes_with_scores(question_vector, n_results=5)
+    scored_raw = search_similar_notes_with_scores(question_vector, n_results=20)
+
+    # Match back to full note dicts for metadata
+    scored_notes = []
+    for content, score in scored_raw:
+        note = next((n for n in all_notes if n.get("content", "") == content), None)
+        if note:
+            scored_notes.append((note, score))
+        else:
+            scored_notes.append(({"content": content, "category": "", "date": "", "time": ""}, score))
+
+    # Apply category filter
+    if cat_filter != "All":
+        scored_notes = [(n, s) for n, s in scored_notes if n.get("category") == cat_filter]
+
+    # Apply keyword filter
+    if keyword.strip():
+        kw = keyword.strip().lower()
+        scored_notes = [(n, s) for n, s in scored_notes if kw in n.get("content", "").lower()]
+
+    # Apply date range filter
+    if date_from or date_to:
+        filtered = []
+        for n, s in scored_notes:
+            nd = _parse_note_date(n.get("date", "") or n.get("created_time", ""))
+            if nd:
+                if date_from and nd < date_from:
+                    continue
+                if date_to and nd > date_to:
+                    continue
+            filtered.append((n, s))
+        scored_notes = filtered
+
+    # Keep top 5 by score
+    scored_notes = sorted(scored_notes, key=lambda x: x[1], reverse=True)[:5]
 
     if not scored_notes:
-        return "I haven't found any related notes in your brain yet. Add some notes first!", []
+        return "No matching notes found with the current filters. Try widening your search.", []
 
-    context = "\n\n".join([f"Note {i+1}: {note}" for i, (note, _) in enumerate(scored_notes)])
+    context = "\n\n".join(
+        f"Note {i+1} [{n.get('category','')} · {n.get('date','')}]: {n.get('content','')}"
+        for i, (n, _) in enumerate(scored_notes)
+    )
 
-    prompt = f"""You are UNIFIQ Brain — a personal assistant that helps the user
-understand their own thoughts and knowledge.
+    prompt = f"""You are Mufakkir — a personal brain assistant that helps the user recall and understand their own saved notes.
 
-The user has asked: "{question}"
+The user asked: "{question}"
 
-Here are the most relevant notes from their personal knowledge base:
-
+Relevant notes from their knowledge base:
 {context}
 
-Based ONLY on these notes, answer the user's question.
-If the notes don't have enough information, say so honestly.
-Be concise and helpful. Write as if you are summarizing their own thinking back to them.
-"""
+Answer based ONLY on these notes. Be concise and direct. If the notes don't have enough info, say so honestly."""
 
     answer = generate(prompt)
 
     if "ai is temporarily unavailable" in answer.lower() and scored_notes:
         note_lines = "\n\n".join(
-            f"**Note {i+1}:** {note}" for i, (note, _) in enumerate(scored_notes)
+            f"**Note {i+1}:** {n.get('content','')}"
+            for i, (n, _) in enumerate(scored_notes)
         )
         answer = (
             f"⚠️ AI is offline right now — here are your most relevant notes "
@@ -56,8 +113,7 @@ Be concise and helpful. Write as if you are summarizing their own thinking back 
     return answer, scored_notes
 
 
-def _add_to_search_history(question: str):
-    """Keeps a rolling list of the last N unique queries."""
+def _add_to_history(question: str):
     history = st.session_state.get("brain_search_history", [])
     if question in history:
         history.remove(question)
@@ -65,114 +121,182 @@ def _add_to_search_history(question: str):
     st.session_state.brain_search_history = history[:_MAX_HISTORY]
 
 
-def _render_sources(sources: list):
-    """Renders source notes as compact expanders below an assistant bubble."""
-    if not sources:
-        return
-    st.caption("📌 **Sources from your notes:**")
-    for i, (note, score) in enumerate(sources, 1):
-        pct = int(score * 100)
-        badge = "🟢" if pct >= 80 else "🟡" if pct >= 60 else "⚪"
-        label = f"{badge} {pct}%  —  {note[:65]}…" if len(note) > 65 else f"{badge} {pct}%  —  {note}"
-        with st.expander(label, expanded=False):
-            st.write(note)
-
-
-def _process_question(question: str):
-    """Runs RAG for `question`, appends both sides to brain_chat, updates search history."""
-    # Guard against duplicate processing (double-click or Streamlit re-render race)
+def _process_question(question: str, cat_filter: str, date_from, date_to, keyword: str):
     chat = st.session_state.brain_chat
     if chat and chat[-1]["role"] == "user" and chat[-1]["content"] == question:
         return
-
     chat.append({"role": "user", "content": question, "sources": []})
-    _add_to_search_history(question)
-
-    # Run RAG
+    _add_to_history(question)
     try:
-        answer, sources = rag_answer(question)
+        answer, sources = rag_answer(question, cat_filter, date_from, date_to, keyword)
     except Exception as e:
-        answer = f"❌ Error searching your brain: {e}"
+        answer = f"❌ Error: {e}"
         sources = []
-
-    st.session_state.brain_chat.append({
-        "role": "assistant",
-        "content": answer,
-        "sources": sources,
-    })
+    chat.append({"role": "assistant", "content": answer, "sources": sources})
 
 
 def ask_brain():
-    """
-    Chatbot UI for Ask My Brain.
-    Called from brain_core.py tab 3.
-    """
-    # ── INIT STATE ───────────────────────────────────────────────────
     if "brain_chat" not in st.session_state:
         st.session_state.brain_chat = []
 
-    # Header row with clear button
-    hcol1, hcol2 = st.columns([6, 1])
-    with hcol1:
-        st.subheader("🧠 Ask Your Brain")
-        st.caption("Type anything — keyword, topic, date, full question. Your brain finds the most relevant notes.")
-    with hcol2:
+    # ── STYLES ───────────────────────────────────────────────────────
+    st.markdown("""
+<style>
+.user-bubble {
+    background: #4F46E5;
+    color: #FFFFFF;
+    border-radius: 18px 18px 4px 18px;
+    padding: 10px 16px;
+    margin: 4px 0 4px 60px;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+.bot-bubble {
+    background: #F8F9FA;
+    border: 1px solid #E5E7EB;
+    color: #1E1E2E;
+    border-radius: 18px 18px 18px 4px;
+    padding: 12px 16px;
+    margin: 4px 60px 4px 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
+.chat-label {
+    font-size: 0.72rem;
+    color: #9CA3AF;
+    margin-bottom: 2px;
+    padding-left: 4px;
+}
+.note-meta {
+    font-size: 0.75rem;
+    color: #9CA3AF;
+    margin-top: 2px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+    # ── HEADER ───────────────────────────────────────────────────────
+    h1, h2 = st.columns([7, 1])
+    with h1:
+        st.markdown("### 🔍 Ask Your Brain")
+        st.caption("Ask anything — keyword, topic, date, or a full question.")
+    with h2:
         if st.session_state.brain_chat:
-            if st.button("🗑 Clear", help="Clear chat", use_container_width=True):
+            if st.button("Clear", use_container_width=True):
                 st.session_state.brain_chat = []
                 st.rerun()
 
-    # ── SEARCH HISTORY CHIPS ─────────────────────────────────────────
-    history = st.session_state.get("brain_search_history", [])
-    if history:
-        with st.expander(f"🕐 Recent searches ({len(history)})", expanded=False):
-            cols = st.columns(3)
-            for i, past_q in enumerate(history):
-                label = f"{past_q[:30]}…" if len(past_q) > 30 else past_q
-                if cols[i % 3].button(label, key=f"hist_chip_{i}", use_container_width=True):
-                    _process_question(past_q)
-                    st.rerun()
+    # ── FILTERS ──────────────────────────────────────────────────────
+    with st.expander("🔧 Search Filters", expanded=False):
+        fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
+        with fc1:
+            cat_filter = st.selectbox("Category", ["All"] + BRAIN_CATEGORIES,
+                                      key="rag_cat_filter")
+        with fc2:
+            keyword_filter = st.text_input("Keyword", placeholder="e.g. RAG, Python…",
+                                           key="rag_keyword_filter",
+                                           label_visibility="visible")
+        with fc3:
+            date_from_input = st.date_input("From date", value=None, key="rag_date_from")
+        with fc4:
+            date_to_input = st.date_input("To date", value=None, key="rag_date_to")
 
-    # ── STARTER CHIPS (only when chat is empty) ───────────────────────
+    # ── QUICK PROMPTS ────────────────────────────────────────────────
     if not st.session_state.brain_chat:
-        st.markdown("**Try asking:**")
-        starter_chips = [
+        st.markdown(
+            "<div style='color:#9CA3AF;font-size:0.85rem;margin:12px 0 6px;'>Try asking:</div>",
+            unsafe_allow_html=True
+        )
+        starters = [
             "What do I know about RAG?",
             "Show my cybersecurity notes",
             "What have I written about productivity?",
             "Summarise my learning notes",
         ]
         c1, c2 = st.columns(2)
-        pairs = [(starter_chips[i], starter_chips[i + 1]) for i in range(0, len(starter_chips), 2)]
-        for left, right in pairs:
-            if c1.button(left, key=f"starter_{left[:15]}", use_container_width=True):
-                _process_question(left)
+        for i, s in enumerate(starters):
+            col = c1 if i % 2 == 0 else c2
+            if col.button(s, key=f"qs_{i}", use_container_width=True):
+                with st.spinner("Searching your brain…"):
+                    _process_question(s, cat_filter, date_from_input, date_to_input, keyword_filter)
                 st.rerun()
-            if c2.button(right, key=f"starter_{right[:15]}", use_container_width=True):
-                _process_question(right)
-                st.rerun()
+        st.divider()
 
-    # ── RENDER CHAT HISTORY ───────────────────────────────────────────
+    # ── CHAT MESSAGES ────────────────────────────────────────────────
     for msg in st.session_state.brain_chat:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg["role"] == "assistant":
-                _render_sources(msg.get("sources", []))
+        if msg["role"] == "user":
+            st.markdown(
+                f'<div class="chat-label" style="text-align:right">You</div>'
+                f'<div class="user-bubble">{msg["content"]}</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown('<div class="chat-label">Mufakkir</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="bot-bubble">{msg["content"]}</div>',
+                unsafe_allow_html=True
+            )
+            sources = msg.get("sources", [])
+            if sources:
+                top = [(n, s) for n, s in sources if s >= 0.35]
+                if top:
+                    with st.expander(f"📌 {len(top)} source{'s' if len(top)>1 else ''} from your notes", expanded=False):
+                        for note_dict, score in top:
+                            pct = int(score * 100)
+                            cat  = note_dict.get("category", "")
+                            date = note_dict.get("date", "")
+                            time = note_dict.get("time", "")
+                            emoji = CAT_EMOJI.get(cat, "📝")
+                            color = _CAT_COLOR.get(cat, "#6B7280")
+                            badge = "🟢" if pct >= 80 else "🟡" if pct >= 60 else "⚪"
+                            content = note_dict.get("content", "")
 
-    # ── CHAT INPUT ────────────────────────────────────────────────────
-    # st.chat_input can't be used inside st.tabs, so we use a form instead
+                            st.markdown(
+                                f'<div style="margin:6px 0;padding:10px 12px;background:#F8F9FA;'
+                                f'border:1px solid #E5E7EB;border-radius:8px;">'
+                                f'<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'
+                                f'<span style="background:{color}20;color:{color};'
+                                f'border-radius:12px;padding:1px 8px;font-size:0.74rem;font-weight:600;">'
+                                f'{emoji} {cat}</span>'
+                                f'<span style="font-size:0.74rem;color:#9CA3AF;">{badge} {pct}% match</span>'
+                                f'</div>'
+                                f'<div style="font-size:0.88rem;color:#374151;">'
+                                f'{content[:200]}{"…" if len(content)>200 else ""}</div>'
+                                f'<div class="note-meta">📅 {date}{"  🕐 " + time if time else ""}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+
+    # ── INPUT BAR ────────────────────────────────────────────────────
     with st.form(key="brain_chat_form", clear_on_submit=True):
-        col_in, col_btn = st.columns([8, 1])
+        col_in, col_btn = st.columns([9, 1])
         with col_in:
             question = st.text_input(
-                "chat_input",
-                placeholder="Ask anything — keyword, topic, date, question…",
+                "ask", placeholder="Ask anything about your notes…",
                 label_visibility="collapsed",
             )
         with col_btn:
-            submitted = st.form_submit_button("➤", use_container_width=True)
+            sent = st.form_submit_button("➤", use_container_width=True)
 
-    if submitted and question.strip():
+    if sent and question.strip():
         with st.spinner("Searching your brain…"):
-            _process_question(question.strip())
+            _process_question(
+                question.strip(),
+                cat_filter,
+                date_from_input,
+                date_to_input,
+                keyword_filter,
+            )
         st.rerun()
+
+    # ── RECENT SEARCHES ──────────────────────────────────────────────
+    history = st.session_state.get("brain_search_history", [])
+    if history and st.session_state.brain_chat:
+        with st.expander(f"🕐 Recent searches ({len(history)})", expanded=False):
+            cols = st.columns(3)
+            for i, q in enumerate(history[:9]):
+                label = q[:28] + "…" if len(q) > 28 else q
+                if cols[i % 3].button(label, key=f"h_{i}", use_container_width=True):
+                    with st.spinner("Searching…"):
+                        _process_question(q, cat_filter, date_from_input, date_to_input, keyword_filter)
+                    st.rerun()

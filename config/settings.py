@@ -19,6 +19,8 @@ SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "unifiq-db")
 
 # ── APP CONSTANTS ────────────────────────────────────────────────────
 BRAIN_CATEGORIES = ["Work", "Learning", "Personal", "Technical", "Career"]
+# Note: spec Task 4 says Work/Learning/Personal for confidence UI,
+# but we keep all 5 so existing notes stay categorized correctly.
 PROJECT_STATUSES = ["Active", "On Hold", "Completed"]
 TASK_PRIORITIES = ["High", "Medium", "Low"]
 TASK_STATUSES = ["To Do", "In Progress", "Done"]
