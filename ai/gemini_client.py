@@ -37,10 +37,19 @@ def _post_gemini(url: str, prompt: str, key: str) -> str:
         url, json=body,
         params={"key": key},
         headers={"Content-Type": "application/json"},
-        timeout=8,
+        timeout=10,
     )
     r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    data = r.json()
+    # Detect empty / blocked responses and raise so caller can try next key/model
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise ValueError("Gemini returned no candidates")
+    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    if not text:
+        finish = candidates[0].get("finishReason", "UNKNOWN")
+        raise ValueError(f"Gemini returned empty text (finishReason={finish})")
+    return text
 
 
 def _get_selected_model_info() -> dict:
@@ -91,8 +100,12 @@ def _get_groq_response(prompt: str, model_id: str = None) -> str:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1000,
+                timeout=15,
             )
-            return completion.choices[0].message.content
+            content = completion.choices[0].message.content
+            if not content:
+                raise ValueError(f"Groq model {model} returned empty content")
+            return content
         except Exception as e:
             last_exc = e
             continue

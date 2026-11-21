@@ -307,7 +307,11 @@ def show():
             _audio_input_fn = getattr(st, "audio_input", None) or getattr(st, "experimental_audio_input", None)
             if _HAS_AUDIO_INPUT and _audio_input_fn is not None:
                 # Live mic recording
-                st.caption("🎙️ Record a voice note — it will auto-fill the box below")
+                if st.session_state.get("_voice_success_msg"):
+                    st.success("✅ Voice transcribed — text filled below")
+                    st.session_state.pop("_voice_success_msg", None)
+                else:
+                    st.caption("🎙️ Record a voice note — it will auto-fill the box below")
                 live_audio = _audio_input_fn("Record", key="live_mic",
                                              label_visibility="collapsed")
                 if live_audio is not None:
@@ -323,7 +327,6 @@ def show():
                                 _t = _gc.audio.transcriptions.create(
                                     file=("recording.wav", _abytes),
                                     model="whisper-large-v3",
-                                    language="en",
                                     response_format="text",
                                 )
                                 st.session_state["dump_thought_input"] = str(_t).strip()
@@ -350,7 +353,6 @@ def show():
                             transcription = _gc.audio.transcriptions.create(
                                 file=(voice_file.name, audio_bytes),
                                 model="whisper-large-v3",
-                                language="en",
                                 response_format="text",
                             )
                             st.session_state["dump_thought_input"] = str(transcription).strip()
@@ -368,9 +370,15 @@ def show():
                 key="dump_thought_input",
             )
 
-            # Proactive surfacing while typing
+            # Proactive surfacing while typing — cached by input hash to avoid per-keystroke API calls
             if note_input.strip() and len(note_input.strip()) >= 15:
-                related = get_related_to_input(note_input.strip(), n=3)
+                _phash = hash(note_input.strip()[:200])
+                if st.session_state.get("_proactive_hash") != _phash:
+                    related = get_related_to_input(note_input.strip(), n=3)
+                    st.session_state["_proactive_hash"] = _phash
+                    st.session_state["_proactive_cache"] = related
+                else:
+                    related = st.session_state.get("_proactive_cache", [])
                 if related:
                     with col_side:
                         st.markdown("""

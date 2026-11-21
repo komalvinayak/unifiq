@@ -262,12 +262,19 @@ def _show_mood_trends(all_notes: list):
 
     non_neutral = {m: c for m, c in mood_counts.items() if m != "Neutral" and c > 0}
     if not non_neutral:
-        st.info("Not enough emotional content in your notes yet.")
-        return
-
-    moods = list(non_neutral.keys())
-    counts = [non_neutral[m] for m in moods]
-    colors = [_MOOD_COLORS.get(m, "#6B7280") for m in moods]
+        # All notes are Neutral (older notes saved before mood tracking)
+        st.info(
+            "Mood tracking started recently — notes saved before this feature "
+            "show as Neutral. Keep adding new thoughts to see your mood patterns grow."
+        )
+        # Still show a Neutral-only bar so the UI isn't empty
+        moods = ["Neutral"]
+        counts = [mood_counts.get("Neutral", 0)]
+        colors = ["#D1D5DB"]
+    else:
+        moods = list(non_neutral.keys())
+        counts = [non_neutral[m] for m in moods]
+        colors = [_MOOD_COLORS.get(m, "#6B7280") for m in moods]
 
     col1, col2 = st.columns(2)
     with col1:
@@ -348,47 +355,43 @@ Total notes analyzed: {len(all_notes)}
 _BLIND_SPOT_AREAS = ["Health", "Relationships", "Finance", "Creativity",
                      "Rest", "Career", "Learning", "Personal Growth"]
 
+_BLIND_SPOT_KEYWORDS = {
+    "Health": ["health", "exercise", "workout", "gym", "sick", "doctor", "medicine",
+               "sleep", "diet", "weight", "fitness", "run", "walk", "yoga", "eat", "food", "body"],
+    "Relationships": ["friend", "family", "parents", "partner", "husband", "wife",
+                      "relationship", "marriage", "dating", "social", "people", "meet", "love", "brother", "sister"],
+    "Finance": ["money", "salary", "income", "expense", "budget", "invest", "save",
+                "debt", "loan", "rent", "bank", "savings", "cost", "pay", "spend", "rupee", "rupees"],
+    "Creativity": ["creative", "art", "music", "write", "design", "draw", "paint",
+                   "build", "craft", "project", "hobby", "make", "create", "idea", "poetry", "poem"],
+    "Rest": ["rest", "relax", "tired", "break", "vacation", "holiday", "weekend",
+             "leisure", "recharge", "burnout", "stress", "nap", "chill"],
+    "Career": ["career", "job", "work", "promotion", "interview", "resume", "apply",
+               "company", "office", "boss", "colleague", "manager", "business", "internship"],
+    "Learning": ["learn", "study", "course", "book", "read", "education", "skill",
+                 "knowledge", "understand", "practice", "research", "university", "school", "class", "lecture"],
+    "Personal Growth": ["grow", "improve", "goal", "habit", "mindset", "reflect",
+                        "journal", "self", "change", "discipline", "confidence", "purpose", "motivat"],
+}
 
-def _extract_blind_spot_json(raw: str, _json) -> dict:
-    """Try multiple strategies to pull the 8-key dict out of an LLM response."""
-    import re as _re
 
-    # Strip markdown code fences if present
-    cleaned = _re.sub(r"```[a-z]*", "", raw).strip()
-
-    # Strategy 1: find first { ... last }
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            obj = _json.loads(cleaned[start:end + 1])
-            if isinstance(obj, dict) and any(k in obj for k in _BLIND_SPOT_AREAS):
-                return {k: int(obj.get(k, 0)) for k in _BLIND_SPOT_AREAS}
-        except Exception:
-            pass
-
-    # Strategy 2: scan for "Key": number pairs
-    pairs = _re.findall(r'"([^"]+)"\s*:\s*(\d+)', raw)
-    if pairs:
-        obj = {k: int(v) for k, v in pairs}
-        if any(k in obj for k in _BLIND_SPOT_AREAS):
-            return {k: int(obj.get(k, 0)) for k in _BLIND_SPOT_AREAS}
-
-    return {}
+def _count_blind_spot_mentions(all_notes: list) -> dict:
+    """Count notes that mention each life area using keyword matching."""
+    counts = {area: 0 for area in _BLIND_SPOT_AREAS}
+    for note in all_notes:
+        text = note.get("content", "").lower()
+        for area, keywords in _BLIND_SPOT_KEYWORDS.items():
+            if any(kw in text for kw in keywords):
+                counts[area] += 1
+    return counts
 
 
 def _show_blind_spot(all_notes: list):
-    import json as _json
-
     st.markdown("**🔭 Blind Spot Detector**")
     st.caption("Which parts of life dominate your thinking — and which are absent?")
 
-    if len(all_notes) < 20:
-        st.info("Add at least 20 notes for an accurate blind spot analysis.")
-        return
-
-    unique_cats = {n.get("category", "") for n in all_notes if n.get("category")}
-    if len(unique_cats) <= 1:
-        st.info("Your notes need more variety for blind spot detection.")
+    if len(all_notes) < 10:
+        st.info(f"Add at least 10 notes for blind spot analysis ({len(all_notes)} so far).")
         return
 
     if st.button("🔄 Refresh Analysis", key="blind_spot_refresh"):
@@ -409,31 +412,8 @@ def _show_blind_spot(all_notes: list):
         )
 
     if "blind_spot_data" not in st.session_state:
-        note_texts = "\n".join(
-            f"- {n.get('content', '')[:150]}"
-            for n in all_notes[:60]
-        )
-        prompt = (
-            "Count how many of the notes below clearly mention each life area.\n"
-            "Only count a note if it explicitly mentions that area. Do not infer.\n"
-            "Return ONLY a JSON object — no markdown, no explanation, no extra text.\n\n"
-            "Required output format (fill in the numbers):\n"
-            '{"Health": 0, "Relationships": 0, "Finance": 0, "Creativity": 0, '
-            '"Rest": 0, "Career": 0, "Learning": 0, "Personal Growth": 0}\n\n'
-            f"Notes:\n{note_texts}"
-        )
-        with st.spinner("Analysing your life areas…"):
-            raw = generate(prompt)
-
-        topic_counts = _extract_blind_spot_json(raw, _json)
-
-        if topic_counts:
-            st.session_state["blind_spot_data"] = topic_counts
-        else:
-            st.warning("Could not parse life area analysis — the AI returned an unexpected format.")
-            with st.expander("Show raw AI response (for debugging)"):
-                st.code(raw)
-            return
+        topic_counts = _count_blind_spot_mentions(all_notes)
+        st.session_state["blind_spot_data"] = topic_counts
 
     topic_counts = st.session_state.get("blind_spot_data", {})
     if not topic_counts:
@@ -471,27 +451,24 @@ def _show_blind_spot(all_notes: list):
         else:
             st.caption("All life areas appear in your notes.")
 
+    # Compute a simple template observation — no AI call needed
     if "blind_spot_insight" not in st.session_state:
-        with st.spinner("Generating observation…"):
-            prompt2 = f"""Based on this topic frequency data, give ONE specific factual observation.
-Only state what the numbers clearly show.
-If data is not conclusive, return exactly: "Keep adding notes for a clearer picture."
-Maximum 2 sentences.
-
-Data: {topic_counts}
-Total notes: {len(all_notes)}
-Date range: {date_range}
-"""
-            st.session_state["blind_spot_insight"] = generate(prompt2)
+        sorted_areas = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)
+        top = [(a, c) for a, c in sorted_areas if c > 0]
+        absent = [a for a, c in sorted_areas if c == 0]
+        if top and absent:
+            msg = (f"Your notes focus most on **{top[0][0]}** ({top[0][1]} notes). "
+                   f"**{', '.join(absent[:3])}** {'are' if len(absent) > 1 else 'is'} "
+                   f"completely absent — worth reflecting on?")
+        elif top:
+            msg = f"Your notes touch all 8 life areas. **{top[0][0]}** leads with {top[0][1]} notes."
+        else:
+            msg = "No life area keywords detected yet — keep adding notes."
+        st.session_state["blind_spot_insight"] = msg
 
     insight = st.session_state.get("blind_spot_insight", "")
     if insight:
-        st.markdown(
-            f'<div style="background:#F8F9FA;border:1px solid #E5E7EB;border-radius:10px;'
-            f'padding:14px 16px;margin:12px 0;font-size:0.9rem;color:#1E1E2E;">'
-            f'🤖 {insight}</div>',
-            unsafe_allow_html=True
-        )
+        st.info(f"💡 {insight}")
 
     st.caption(
         f"Based on {len(all_notes)} notes from {date_range} · "
@@ -499,10 +476,10 @@ Date range: {date_range}
     )
     with st.expander("How is this calculated?"):
         st.markdown("""
-**Life area counting**: Gemini reads your notes and counts how many explicitly mention each life area. It never infers — if a note doesn't clearly mention an area, it's not counted.
-**Frequent (4+ notes)**: Areas that appear more than 3 times across your notes.
-**Rarely on your mind (0 notes)**: Areas with zero mentions across all notes — not 1 or 2, exactly 0.
-**AI observation**: Only states what the numbers clearly show. If the data is mixed or unclear, it says so.
+**Life area counting**: Each note is scanned for keywords linked to 8 life areas (Health, Relationships, Finance, Creativity, Rest, Career, Learning, Personal Growth). A note counts for an area if it contains any matching keyword.
+**Frequent (4+ notes)**: Areas that appear in more than 3 of your notes.
+**Rarely on your mind (0 notes)**: Areas with zero keyword matches across all your notes.
+**Observation**: Auto-generated from the keyword counts — which area leads, which are absent.
 """)
 
 
@@ -513,9 +490,6 @@ def show_insights(all_notes: list):
     if not all_notes:
         st.info("Add some notes first to see your thinking patterns.")
         return
-
-    _show_heatmap(all_notes)
-    st.divider()
 
     # ── QUICK STATS ROW ──────────────────────────────────────────────
     total = len(all_notes)
