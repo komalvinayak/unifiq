@@ -9,6 +9,7 @@ import datetime
 import re
 from collections import Counter
 import streamlit as st
+import plotly.graph_objects as go
 from ai.gemini_client import generate
 from utils.date_utils import now_ist
 from config.settings import BRAIN_CATEGORIES
@@ -60,6 +61,451 @@ def _get_week_notes(notes: list) -> list:
     return result
 
 
+def _show_heatmap(all_notes: list):
+    st.markdown("**🗓️ Thought Frequency Heatmap**")
+    st.caption("Your note-taking activity over the last 12 months.")
+
+    now = now_ist()
+    today = now.date()
+    cutoff = (now - datetime.timedelta(days=365)).date()
+
+    date_counts: Counter = Counter()
+    date_cats: dict = {}
+
+    for n in all_notes:
+        d = _parse_date(n.get("date", "") or n.get("created_time", ""))
+        if d and d.date() >= cutoff:
+            ds = d.date().isoformat()
+            date_counts[ds] += 1
+            cat = n.get("category", "Personal")
+            if ds not in date_cats:
+                date_cats[ds] = Counter()
+            date_cats[ds][cat] += 1
+
+    unique_days = len(date_counts)
+    if unique_days < 7:
+        st.info("Keep adding thoughts — your activity map is building.")
+        return
+
+    # Align grid start to Monday of the cutoff week
+    start = cutoff - datetime.timedelta(days=cutoff.weekday())
+    end_week = today + datetime.timedelta(days=(6 - today.weekday()))
+    total_days = (end_week - start).days + 1
+    total_weeks = (total_days + 6) // 7
+
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    z_raw = [[0] * total_weeks for _ in range(7)]
+    text_grid = [[""] * total_weeks for _ in range(7)]
+
+    for i in range(total_days):
+        d = start + datetime.timedelta(days=i)
+        wk = i // 7
+        dy = d.weekday()
+        if wk >= total_weeks:
+            break
+        ds = d.isoformat()
+        count = date_counts.get(ds, 0)
+        z_raw[dy][wk] = count
+        top_cat = ""
+        if ds in date_cats:
+            top_cat = date_cats[ds].most_common(1)[0][0]
+        hover = f"{d.strftime('%d %b %Y')}<br>{count} note{'s' if count != 1 else ''}"
+        if top_cat:
+            hover += f"<br>Top: {top_cat}"
+        text_grid[dy][wk] = hover
+
+    def _bucket(v):
+        if v == 0: return 0
+        if v <= 2: return 1
+        if v <= 5: return 2
+        return 3
+
+    z_mapped = [[_bucket(v) for v in row] for row in z_raw]
+    colorscale = [[0.0, "#EBEDF0"], [0.33, "#C7D2FE"], [0.66, "#818CF8"], [1.0, "#4F46E5"]]
+
+    prev_month = None
+    x_labels = []
+    for w in range(total_weeks):
+        ws = start + datetime.timedelta(weeks=w)
+        if ws.month != prev_month:
+            x_labels.append(ws.strftime("%b"))
+            prev_month = ws.month
+        else:
+            x_labels.append("")
+
+    fig = go.Figure(go.Heatmap(
+        z=z_mapped, x=x_labels, y=day_names,
+        text=text_grid, hovertemplate="%{text}<extra></extra>",
+        colorscale=colorscale, showscale=False,
+        xgap=2, ygap=2, zmin=0, zmax=3,
+    ))
+    fig.update_layout(
+        height=180, margin=dict(l=40, r=10, t=10, b=30),
+        paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        yaxis=dict(autorange="reversed", tickfont=dict(size=11), gridcolor="rgba(0,0,0,0)"),
+        xaxis=dict(tickfont=dict(size=10), tickangle=0, gridcolor="rgba(0,0,0,0)", side="top"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Stats ────────────────────────────────────────────────────────
+    all_dates_sorted = sorted(date_counts.keys())
+
+    # Current streak (from today or yesterday)
+    current_streak = 0
+    check = today if today.isoformat() in date_counts else today - datetime.timedelta(days=1)
+    if check.isoformat() in date_counts:
+        while check.isoformat() in date_counts:
+            current_streak += 1
+            check -= datetime.timedelta(days=1)
+
+    # Longest streak
+    longest_streak = 0
+    longest_start = longest_end = None
+    if all_dates_sorted:
+        cur = 1
+        cur_start_d = datetime.date.fromisoformat(all_dates_sorted[0])
+        for i in range(1, len(all_dates_sorted)):
+            prev_d = datetime.date.fromisoformat(all_dates_sorted[i - 1])
+            curr_d = datetime.date.fromisoformat(all_dates_sorted[i])
+            if (curr_d - prev_d).days == 1:
+                cur += 1
+            else:
+                if cur > longest_streak:
+                    longest_streak = cur
+                    longest_start = cur_start_d
+                    longest_end = prev_d
+                cur = 1
+                cur_start_d = curr_d
+        if cur > longest_streak:
+            longest_streak = cur
+            longest_start = cur_start_d
+            longest_end = datetime.date.fromisoformat(all_dates_sorted[-1])
+
+    # Day-of-week note totals
+    dow_totals: Counter = Counter()
+    for ds, cnt in date_counts.items():
+        d = datetime.date.fromisoformat(ds)
+        dow_totals[d.strftime("%A")] += cnt
+
+    total_note_count = len(all_notes)
+    days_with_notes = len(date_counts)
+    daily_avg = total_note_count / max(1, days_with_notes)
+
+    stat_cols = st.columns(4)
+    stat_cols[0].metric("Total Notes", total_note_count)
+
+    if unique_days >= 7:
+        if current_streak >= 7:
+            s_start = today - datetime.timedelta(days=current_streak - 1)
+            stat_cols[1].metric("Current Streak", f"{current_streak} days",
+                                f"{s_start.strftime('%d %b')} – {today.strftime('%d %b')}")
+        else:
+            stat_cols[1].metric("Current Streak",
+                                f"{current_streak} day{'s' if current_streak != 1 else ''}")
+
+        if longest_streak >= 7 and longest_start and longest_end:
+            stat_cols[2].metric("Longest Streak", f"{longest_streak} days",
+                                f"{longest_start.strftime('%d %b')} – {longest_end.strftime('%d %b')}")
+
+        if dow_totals:
+            top_day, top_day_total = dow_totals.most_common(1)[0]
+            day_occ = sum(1 for ds in date_counts
+                          if datetime.date.fromisoformat(ds).strftime("%A") == top_day)
+            day_avg_n = top_day_total / max(1, day_occ)
+            if daily_avg > 0 and day_avg_n >= 2 * daily_avg:
+                stat_cols[3].metric("Most Active Day", top_day,
+                                    f"avg {day_avg_n:.1f} vs {daily_avg:.1f} overall")
+
+    with st.expander("How is this calculated?"):
+        st.markdown("""
+**Heatmap**: Each cell = one day. Color = notes saved that day (white → light blue → indigo = more notes).
+**Current streak**: Consecutive days ending today (or yesterday if you haven't saved yet today).
+**Longest streak**: The longest run of consecutive days with at least one note.
+**Most active day**: Only shown when that day averages 2× the overall daily average.
+""")
+
+
+_MOOD_EMOJI_MAP = {
+    "Curious": "🔍", "Anxious": "😟", "Excited": "🔥",
+    "Confused": "😕", "Motivated": "💪", "Neutral": "⚪",
+}
+_MOOD_COLORS = {
+    "Curious": "#6366F1", "Anxious": "#F59E0B", "Excited": "#EF4444",
+    "Confused": "#8B5CF6", "Motivated": "#10B981",
+}
+
+
+def _show_mood_trends(all_notes: list):
+    st.markdown("**🎭 Mood Trends**")
+    st.caption("How you feel when you write — detected from your words at save time.")
+
+    if len(all_notes) < 10:
+        st.info("Add at least 10 notes to see your mood patterns.")
+        return
+
+    mood_counts: Counter = Counter()
+    days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    mood_by_day: dict = {d: Counter() for d in days_order}
+
+    for n in all_notes:
+        mood = n.get("mood", "") or "Neutral"
+        if mood not in _MOOD_EMOJI_MAP:
+            mood = "Neutral"
+        mood_counts[mood] += 1
+        dow = n.get("day_of_week", "")
+        if not dow:
+            d = _parse_date(n.get("date", "") or n.get("created_time", ""))
+            if d:
+                dow = d.strftime("%A")
+        if dow in mood_by_day:
+            mood_by_day[dow][mood] += 1
+
+    non_neutral = {m: c for m, c in mood_counts.items() if m != "Neutral" and c > 0}
+    if not non_neutral:
+        st.info("Not enough emotional content in your notes yet.")
+        return
+
+    moods = list(non_neutral.keys())
+    counts = [non_neutral[m] for m in moods]
+    colors = [_MOOD_COLORS.get(m, "#6B7280") for m in moods]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        fig1 = go.Figure(go.Bar(
+            x=[f"{_MOOD_EMOJI_MAP.get(m, '')} {m}" for m in moods],
+            y=counts,
+            marker_color=colors,
+            text=counts, textposition="outside",
+        ))
+        fig1.update_layout(
+            title="Mood Frequency", height=280,
+            margin=dict(l=20, r=20, t=40, b=20),
+            paper_bgcolor="white", plot_bgcolor="white", showlegend=False,
+            yaxis=dict(gridcolor="#F3F4F6"),
+            xaxis=dict(tickfont=dict(size=11)),
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col2:
+        day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        traces = []
+        for mood, color in _MOOD_COLORS.items():
+            vals = [mood_by_day[d].get(mood, 0) for d in days_order]
+            if any(v > 0 for v in vals):
+                traces.append(go.Bar(
+                    name=f"{_MOOD_EMOJI_MAP.get(mood, '')} {mood}",
+                    x=day_labels, y=vals, marker_color=color,
+                ))
+        if traces:
+            fig2 = go.Figure(data=traces)
+            fig2.update_layout(
+                title="Mood by Day", barmode="stack", height=280,
+                margin=dict(l=20, r=20, t=40, b=20),
+                paper_bgcolor="white", plot_bgcolor="white",
+                yaxis=dict(gridcolor="#F3F4F6"),
+                legend=dict(font=dict(size=10)),
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+    # Gemini insight only when one mood is 3× more common than the second
+    top_moods = sorted(non_neutral.items(), key=lambda x: x[1], reverse=True)
+    if len(top_moods) >= 2 and top_moods[0][1] >= 3 * top_moods[1][1]:
+        if "mood_insight" not in st.session_state:
+            with st.spinner("Generating mood insight…"):
+                mb_day_str = {d: dict(mood_by_day[d]) for d in days_order if mood_by_day[d]}
+                prompt = f"""Based on this mood frequency data, give ONE specific insight.
+Only state something if the pattern is clear and significant.
+If no clear pattern exists, return exactly: "No strong pattern detected yet."
+Do not mention note content. Maximum 2 sentences.
+
+Mood counts: {dict(non_neutral)}
+Mood by day: {mb_day_str}
+Total notes analyzed: {len(all_notes)}
+"""
+                st.session_state["mood_insight"] = generate(prompt)
+        insight = st.session_state.get("mood_insight", "")
+        if insight:
+            st.markdown(
+                f'<div style="background:#F0F0FF;border:1px solid #C7D2FE;border-radius:10px;'
+                f'padding:14px 16px;font-size:0.9rem;color:#1E1E2E;margin:10px 0;">'
+                f'🤖 {insight}</div>',
+                unsafe_allow_html=True
+            )
+
+    st.caption(
+        f"Based on {len(all_notes)} notes · "
+        f"Last updated {now_ist().strftime('%d %b %Y, %I:%M %p')} IST"
+    )
+    with st.expander("How is this calculated?"):
+        st.markdown("""
+**Mood detection**: When you save a note, Mufakkir asks Gemini to detect the emotional tone from your words alone.
+**Neutral notes**: Factual notes or notes under 5 words are marked Neutral and excluded from these charts.
+**Day breakdown**: Shows which moods appear on which days of the week.
+**AI insight**: Only generated when one mood is 3× more common than the second — otherwise the pattern isn't strong enough.
+""")
+
+
+_BLIND_SPOT_AREAS = ["Health", "Relationships", "Finance", "Creativity",
+                     "Rest", "Career", "Learning", "Personal Growth"]
+
+
+def _extract_blind_spot_json(raw: str, _json) -> dict:
+    """Try multiple strategies to pull the 8-key dict out of an LLM response."""
+    import re as _re
+
+    # Strip markdown code fences if present
+    cleaned = _re.sub(r"```[a-z]*", "", raw).strip()
+
+    # Strategy 1: find first { ... last }
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            obj = _json.loads(cleaned[start:end + 1])
+            if isinstance(obj, dict) and any(k in obj for k in _BLIND_SPOT_AREAS):
+                return {k: int(obj.get(k, 0)) for k in _BLIND_SPOT_AREAS}
+        except Exception:
+            pass
+
+    # Strategy 2: scan for "Key": number pairs
+    pairs = _re.findall(r'"([^"]+)"\s*:\s*(\d+)', raw)
+    if pairs:
+        obj = {k: int(v) for k, v in pairs}
+        if any(k in obj for k in _BLIND_SPOT_AREAS):
+            return {k: int(obj.get(k, 0)) for k in _BLIND_SPOT_AREAS}
+
+    return {}
+
+
+def _show_blind_spot(all_notes: list):
+    import json as _json
+
+    st.markdown("**🔭 Blind Spot Detector**")
+    st.caption("Which parts of life dominate your thinking — and which are absent?")
+
+    if len(all_notes) < 20:
+        st.info("Add at least 20 notes for an accurate blind spot analysis.")
+        return
+
+    unique_cats = {n.get("category", "") for n in all_notes if n.get("category")}
+    if len(unique_cats) <= 1:
+        st.info("Your notes need more variety for blind spot detection.")
+        return
+
+    if st.button("🔄 Refresh Analysis", key="blind_spot_refresh"):
+        st.session_state.pop("blind_spot_data", None)
+        st.session_state.pop("blind_spot_insight", None)
+
+    # Date range label
+    all_date_objs = []
+    for n in all_notes:
+        d = _parse_date(n.get("date", "") or n.get("created_time", ""))
+        if d:
+            all_date_objs.append(d.date())
+    date_range = "—"
+    if all_date_objs:
+        date_range = (
+            f"{min(all_date_objs).strftime('%d %b %Y')} – "
+            f"{max(all_date_objs).strftime('%d %b %Y')}"
+        )
+
+    if "blind_spot_data" not in st.session_state:
+        note_texts = "\n".join(
+            f"- {n.get('content', '')[:150]}"
+            for n in all_notes[:60]
+        )
+        prompt = (
+            "Count how many of the notes below clearly mention each life area.\n"
+            "Only count a note if it explicitly mentions that area. Do not infer.\n"
+            "Return ONLY a JSON object — no markdown, no explanation, no extra text.\n\n"
+            "Required output format (fill in the numbers):\n"
+            '{"Health": 0, "Relationships": 0, "Finance": 0, "Creativity": 0, '
+            '"Rest": 0, "Career": 0, "Learning": 0, "Personal Growth": 0}\n\n'
+            f"Notes:\n{note_texts}"
+        )
+        with st.spinner("Analysing your life areas…"):
+            raw = generate(prompt)
+
+        topic_counts = _extract_blind_spot_json(raw, _json)
+
+        if topic_counts:
+            st.session_state["blind_spot_data"] = topic_counts
+        else:
+            st.warning("Could not parse life area analysis — the AI returned an unexpected format.")
+            with st.expander("Show raw AI response (for debugging)"):
+                st.code(raw)
+            return
+
+    topic_counts = st.session_state.get("blind_spot_data", {})
+    if not topic_counts:
+        return
+
+    frequent = {a: c for a, c in topic_counts.items() if c > 3}
+    rare = {a: c for a, c in topic_counts.items() if c == 0}
+
+    col_f, col_r = st.columns(2)
+    with col_f:
+        st.markdown("**You think a lot about:**")
+        if frequent:
+            for area, cnt in sorted(frequent.items(), key=lambda x: x[1], reverse=True):
+                st.markdown(
+                    f'<div style="margin:5px 0;padding:8px 12px;background:#DCFCE7;border-radius:8px;'
+                    f'display:flex;justify-content:space-between;align-items:center;">'
+                    f'<span style="font-weight:600;color:#15803D;">{area}</span>'
+                    f'<span style="color:#16A34A;font-size:0.85rem;">{cnt} notes</span></div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("No area mentioned in 4+ notes yet.")
+
+    with col_r:
+        st.markdown("**Rarely on your mind:**")
+        if rare:
+            for area in sorted(rare.keys()):
+                st.markdown(
+                    f'<div style="margin:5px 0;padding:8px 12px;background:#FEF3C7;border-radius:8px;'
+                    f'display:flex;justify-content:space-between;align-items:center;">'
+                    f'<span style="font-weight:600;color:#B45309;">{area}</span>'
+                    f'<span style="color:#D97706;font-size:0.85rem;">0 notes</span></div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("All life areas appear in your notes.")
+
+    if "blind_spot_insight" not in st.session_state:
+        with st.spinner("Generating observation…"):
+            prompt2 = f"""Based on this topic frequency data, give ONE specific factual observation.
+Only state what the numbers clearly show.
+If data is not conclusive, return exactly: "Keep adding notes for a clearer picture."
+Maximum 2 sentences.
+
+Data: {topic_counts}
+Total notes: {len(all_notes)}
+Date range: {date_range}
+"""
+            st.session_state["blind_spot_insight"] = generate(prompt2)
+
+    insight = st.session_state.get("blind_spot_insight", "")
+    if insight:
+        st.markdown(
+            f'<div style="background:#F8F9FA;border:1px solid #E5E7EB;border-radius:10px;'
+            f'padding:14px 16px;margin:12px 0;font-size:0.9rem;color:#1E1E2E;">'
+            f'🤖 {insight}</div>',
+            unsafe_allow_html=True
+        )
+
+    st.caption(
+        f"Based on {len(all_notes)} notes from {date_range} · "
+        f"Last updated {now_ist().strftime('%d %b %Y, %I:%M %p')} IST"
+    )
+    with st.expander("How is this calculated?"):
+        st.markdown("""
+**Life area counting**: Gemini reads your notes and counts how many explicitly mention each life area. It never infers — if a note doesn't clearly mention an area, it's not counted.
+**Frequent (4+ notes)**: Areas that appear more than 3 times across your notes.
+**Rarely on your mind (0 notes)**: Areas with zero mentions across all notes — not 1 or 2, exactly 0.
+**AI observation**: Only states what the numbers clearly show. If the data is mixed or unclear, it says so.
+""")
+
+
 def show_insights(all_notes: list):
     st.subheader("📊 Pattern Intelligence")
     st.caption("Understand your thinking patterns — when, what, and how often.")
@@ -67,6 +513,9 @@ def show_insights(all_notes: list):
     if not all_notes:
         st.info("Add some notes first to see your thinking patterns.")
         return
+
+    _show_heatmap(all_notes)
+    st.divider()
 
     # ── QUICK STATS ROW ──────────────────────────────────────────────
     total = len(all_notes)
@@ -290,3 +739,15 @@ Be personal, warm, and specific. Mention actual topics from the notes."""
             )
     else:
         st.caption("No notes this week yet. Start capturing thoughts!")
+
+    st.divider()
+    _show_mood_trends(all_notes)
+
+    st.divider()
+    _show_blind_spot(all_notes)
+
+    st.divider()
+    st.markdown("**☁️ Topic Clouds**")
+    st.caption("Your notes grouped by category — hover over dots to read them.")
+    from modules.brain.brain_map import render_topic_clouds
+    render_topic_clouds(all_notes)

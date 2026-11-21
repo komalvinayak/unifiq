@@ -13,7 +13,7 @@ from database.sheets_client import get_all_rows, add_row, update_row, delete_row
 from database.chroma_client import add_note_to_chroma, get_note_count, get_related_notes, search_similar_notes_with_scores
 from ai.gemini_client import generate
 from ai.embeddings_client import get_embedding
-from config.settings import BRAIN_CATEGORIES
+from config.settings import BRAIN_CATEGORIES, GROQ_API_KEY
 
 
 CAT_EMOJI = {
@@ -23,6 +23,19 @@ CAT_EMOJI = {
 _CAT_COLOR = {
     "Work": "#4F46E5", "Learning": "#16A34A", "Personal": "#D97706",
     "Technical": "#7C3AED", "Career": "#DC2626",
+}
+_CAT_BG = {
+    "Work":      "#EEF2FF",
+    "Learning":  "#DCFCE7",
+    "Personal":  "#FEF9C3",
+    "Technical": "#F3E8FF",
+    "Career":    "#FEE2E2",
+}
+
+MOOD_LIST = ["Curious", "Anxious", "Excited", "Confused", "Motivated", "Neutral"]
+MOOD_EMOJI = {
+    "Curious": "🔍", "Anxious": "😟", "Excited": "🔥",
+    "Confused": "😕", "Motivated": "💪", "Neutral": "⚪",
 }
 
 
@@ -75,13 +88,41 @@ def categorize_note(text: str) -> str:
     return cat
 
 
+def detect_mood(text: str) -> str:
+    """
+    Detects emotional tone of a note.
+    Returns one of: Curious, Anxious, Excited, Confused, Motivated, Neutral.
+    """
+    prompt = f"""Analyze the emotional tone of this note and return ONLY one word from this exact list:
+Curious, Anxious, Excited, Confused, Motivated, Neutral
+
+Rules:
+- If note is under 5 words, return: Neutral
+- If note is purely factual with no emotional tone, return: Neutral
+- If mixed emotions, return the strongest one
+- Only use the note content below — do not infer from topic
+- Return exactly one word, nothing else
+
+Note: "{text}"
+"""
+    try:
+        result = generate(prompt).strip()
+        word = result.split()[0].strip(".,!?") if result.split() else "Neutral"
+        for m in MOOD_LIST:
+            if word.lower() == m.lower():
+                return m
+    except Exception:
+        pass
+    return "Neutral"
+
+
 # ── SAVE NOTE ─────────────────────────────────────────────────────────
 
-def save_note(content: str, category: str, confidence: int = 100) -> str:
+def save_note(content: str, category: str, confidence: int = 100, mood: str = "Neutral") -> str:
     """
     Saves a note to Google Sheets.
     Columns: note_id | content | category | date | time | embedding
-             | confidence_score | connected_note_ids | day_of_week | created_time
+             | confidence_score | connected_note_ids | day_of_week | created_time | mood | pinned
     """
     note_id = str(uuid.uuid4())[:8]
     ist_now = now_ist()
@@ -111,9 +152,12 @@ def save_note(content: str, category: str, confidence: int = 100) -> str:
         except Exception:
             connected_ids = ""
 
+    if mood not in MOOD_LIST:
+        mood = "Neutral"
+
     row = [
         note_id, content, category, date_str, time_str, embedding_str,
-        confidence, connected_ids, day_of_week, created_time,
+        confidence, connected_ids, day_of_week, created_time, mood, "false",
     ]
     add_row("brain_notes", row)
 
@@ -242,6 +286,79 @@ def show():
         with col_main:
             st.subheader("What's on your mind?")
             st.caption("Write anything — an idea, something you learned, a quick thought.")
+
+            # ── TEMPLATES ────────────────────────────────────────────
+            if st.session_state.pop("_voice_success_msg", False):
+                st.success("✅ Voice transcribed — review and save")
+
+            t1, t2, t3 = st.columns(3)
+            if t1.button("💡 Idea", key="tmpl_idea", use_container_width=True):
+                st.session_state["dump_thought_input"] = "💡 Idea:\nProblem: \nSolution: \nNext step: \n"
+                st.rerun()
+            if t2.button("📚 Learning", key="tmpl_learning", use_container_width=True):
+                st.session_state["dump_thought_input"] = "📚 Learning:\nWhat I learned: \nWhy it matters: \nHow I'll use it: \n"
+                st.rerun()
+            if t3.button("😤 Vent", key="tmpl_vent", use_container_width=True):
+                st.session_state["dump_thought_input"] = "😤 Vent:\nWhat happened: \nHow I feel: \nWhat I'll do: \n"
+                st.rerun()
+
+            # ── VOICE INPUT ───────────────────────────────────────────
+            _HAS_AUDIO_INPUT = hasattr(st, "audio_input") or hasattr(st, "experimental_audio_input")
+            _audio_input_fn = getattr(st, "audio_input", None) or getattr(st, "experimental_audio_input", None)
+            if _HAS_AUDIO_INPUT and _audio_input_fn is not None:
+                # Live mic recording
+                st.caption("🎙️ Record a voice note — it will auto-fill the box below")
+                live_audio = _audio_input_fn("Record", key="live_mic",
+                                             label_visibility="collapsed")
+                if live_audio is not None:
+                    _abytes = (live_audio.getvalue()
+                               if hasattr(live_audio, "getvalue")
+                               else live_audio.read())
+                    _ahash = hash(_abytes[:2000])
+                    if st.session_state.get("_last_live_hash") != _ahash and len(_abytes) > 100:
+                        with st.spinner("Transcribing…"):
+                            try:
+                                from groq import Groq as _Groq
+                                _gc = _Groq(api_key=GROQ_API_KEY)
+                                _t = _gc.audio.transcriptions.create(
+                                    file=("recording.wav", _abytes),
+                                    model="whisper-large-v3",
+                                    language="en",
+                                    response_format="text",
+                                )
+                                st.session_state["dump_thought_input"] = str(_t).strip()
+                                st.session_state["_last_live_hash"] = _ahash
+                                st.session_state["_voice_success_msg"] = True
+                            except Exception as _ve:
+                                st.error(f"Transcription failed: {_ve}")
+                        st.rerun()
+            else:
+                # Fallback: file upload (older Streamlit)
+                st.caption("🎙️ Upload a voice note — it will auto-fill the box below")
+                voice_file = st.file_uploader(
+                    "Upload voice",
+                    type=["mp3", "wav", "m4a", "ogg"],
+                    key="voice_uploader",
+                    label_visibility="collapsed",
+                )
+                if voice_file is not None and st.session_state.get("_last_voice_file") != voice_file.name:
+                    with st.spinner("Transcribing your voice…"):
+                        try:
+                            from groq import Groq as _Groq
+                            _gc = _Groq(api_key=GROQ_API_KEY)
+                            audio_bytes = voice_file.read()
+                            transcription = _gc.audio.transcriptions.create(
+                                file=(voice_file.name, audio_bytes),
+                                model="whisper-large-v3",
+                                language="en",
+                                response_format="text",
+                            )
+                            st.session_state["dump_thought_input"] = str(transcription).strip()
+                            st.session_state["_last_voice_file"] = voice_file.name
+                            st.session_state["_voice_success_msg"] = True
+                        except Exception as _ve:
+                            st.error(f"Transcription failed: {_ve}")
+                    st.rerun()
 
             note_input = st.text_area(
                 "Your thought",
@@ -413,92 +530,162 @@ def show():
         st.caption(f"Showing **{len(filtered)}** of {len(all_notes)} notes")
         st.divider()
 
-        for note in reversed(filtered):
-            cat      = note.get("category", "Personal")
-            note_id  = str(note.get("note_id", ""))
-            content  = note.get("content", "")
-            emoji    = CAT_EMOJI.get(cat, "📝")
-            color    = _CAT_COLOR.get(cat, "#6B7280")
+        # Count ALL pinned notes (across all notes, not just filtered)
+        all_pinned_count = sum(
+            1 for n in all_notes if str(n.get("pinned", "false")).lower() == "true"
+        )
 
-            with st.expander(
-                f"{emoji} {content[:65]}{'…' if len(content)>65 else ''} — {note.get('date','')}",
-                expanded=False
-            ):
-                edit_key = f"editing_{note_id}"
-                if st.session_state.get(edit_key):
-                    edited_content = st.text_area("Edit note", value=content, height=100, key=f"edit_text_{note_id}")
-                    edited_cat = st.selectbox("Category", BRAIN_CATEGORIES,
-                                              index=BRAIN_CATEGORIES.index(cat) if cat in BRAIN_CATEGORIES else 0,
-                                              key=f"edit_cat_{note_id}")
-                    s_col, c_col = st.columns(2)
-                    if s_col.button("💾 Save", key=f"save_{note_id}", type="primary"):
-                        row_num = _get_note_row_number(note_id, all_notes)
-                        if row_num > 0:
-                            emb_str = note.get("embedding", "")
-                            if edited_content.strip() != content:
-                                try:
-                                    emb_str = json.dumps(get_embedding(edited_content.strip()))
-                                except Exception:
-                                    pass
-                            update_row("brain_notes", row_num, [
-                                note_id, edited_content.strip(), edited_cat,
-                                note.get("date"), note.get("time"), emb_str,
-                                note.get("confidence_score", ""), note.get("connected_note_ids", ""),
-                                note.get("day_of_week", ""), note.get("created_time", ""),
-                            ])
-                            st.session_state.pop(edit_key, None)
-                            st.session_state.pop("brain_notes_cache", None)
-                            st.session_state.pop("chroma_initialized", None)
-                            log_activity("Brain Note", f"Edited: {edited_content[:50]}")
-                            st.success("Updated.")
-                            st.rerun()
-                    if c_col.button("✕ Cancel", key=f"cancel_{note_id}"):
-                        st.session_state.pop(edit_key, None)
-                        st.rerun()
-                else:
-                    st.write(content)
-                    # Meta row
-                    meta = []
-                    if note.get("date"): meta.append(f"📅 {note['date']}")
-                    if note.get("time"): meta.append(f"🕐 {note['time']}")
-                    if note.get("day_of_week"): meta.append(f"📆 {note['day_of_week']}")
-                    conf = note.get("confidence_score", "")
-                    if conf: meta.append(f"🎯 {conf}% AI confidence")
-                    st.caption("  ·  ".join(meta) if meta else "")
+        notes_reversed = list(reversed(filtered))
+        pinned_notes   = [n for n in notes_reversed if str(n.get("pinned", "false")).lower() == "true"]
+        unpinned_notes = [n for n in notes_reversed if str(n.get("pinned", "false")).lower() != "true"]
 
-                    # Category badge
-                    st.markdown(
-                        f'<span style="background:{color}20;color:{color};'
-                        f'border-radius:20px;padding:2px 10px;font-size:0.78rem;font-weight:600;">'
-                        f'{emoji} {cat}</span>',
-                        unsafe_allow_html=True
-                    )
-                    st.markdown("")
+        def _render_note_grid(note_list):
+            for i in range(0, len(note_list), 2):
+                card_cols = st.columns(2)
+                for j, col in enumerate(card_cols):
+                    if i + j >= len(note_list):
+                        break
+                    note    = note_list[i + j]
+                    cat     = note.get("category", "Personal")
+                    note_id = str(note.get("note_id", ""))
+                    content = note.get("content", "")
+                    emoji   = CAT_EMOJI.get(cat, "📝")
+                    color   = _CAT_COLOR.get(cat, "#6B7280")
+                    bg      = _CAT_BG.get(cat, "#F8F9FA")
+                    mood    = note.get("mood", "") or "Neutral"
+                    mood_em = MOOD_EMOJI.get(mood, "⚪")
+                    is_pinned = str(note.get("pinned", "false")).lower() == "true"
 
-                    act_col, del_col = st.columns(2)
-                    if act_col.button("✏️ Edit", key=f"open_edit_{note_id}"):
-                        st.session_state[edit_key] = True
-                        st.rerun()
-                    if del_col.button("🗑️ Delete", key=f"del_{note_id}"):
-                        st.session_state[f"confirm_del_{note_id}"] = True
-                        st.rerun()
-
-                    if st.session_state.get(f"confirm_del_{note_id}"):
-                        st.warning("Delete this note? This cannot be undone.")
-                        y_col, n_col = st.columns(2)
-                        if y_col.button("Yes, delete", key=f"yes_del_{note_id}", type="primary"):
-                            row_num = _get_note_row_number(note_id, all_notes)
-                            if row_num > 0:
-                                delete_row("brain_notes", row_num)
-                                log_activity("Brain Note", f"Deleted: {content[:50]}")
-                                st.session_state.pop(f"confirm_del_{note_id}", None)
-                                st.session_state.pop("brain_notes_cache", None)
-                                st.session_state.pop("chroma_initialized", None)
-                                st.success("Deleted.")
+                    with col:
+                        edit_key = f"editing_{note_id}"
+                        if st.session_state.get(edit_key):
+                            # ── Edit mode ────────────────────────────
+                            edited_content = st.text_area(
+                                "Edit note", value=content, height=120,
+                                key=f"edit_text_{note_id}"
+                            )
+                            edited_cat = st.selectbox(
+                                "Category", BRAIN_CATEGORIES,
+                                index=BRAIN_CATEGORIES.index(cat) if cat in BRAIN_CATEGORIES else 0,
+                                key=f"edit_cat_{note_id}"
+                            )
+                            s_col, c_col = st.columns(2)
+                            if s_col.button("💾 Save", key=f"save_{note_id}", type="primary"):
+                                row_num = _get_note_row_number(note_id, all_notes)
+                                if row_num > 0:
+                                    emb_str = note.get("embedding", "")
+                                    if edited_content.strip() != content:
+                                        try:
+                                            emb_str = json.dumps(get_embedding(edited_content.strip()))
+                                        except Exception:
+                                            pass
+                                    update_row("brain_notes", row_num, [
+                                        note_id, edited_content.strip(), edited_cat,
+                                        note.get("date"), note.get("time"), emb_str,
+                                        note.get("confidence_score", ""),
+                                        note.get("connected_note_ids", ""),
+                                        note.get("day_of_week", ""),
+                                        note.get("created_time", ""),
+                                        note.get("mood", "Neutral"),
+                                        note.get("pinned", "false"),
+                                    ])
+                                    st.session_state.pop(edit_key, None)
+                                    st.session_state.pop("brain_notes_cache", None)
+                                    st.session_state.pop("chroma_initialized", None)
+                                    log_activity("Brain Note", f"Edited: {edited_content[:50]}")
+                                    st.success("Updated.")
+                                    st.rerun()
+                            if c_col.button("✕ Cancel", key=f"cancel_{note_id}"):
+                                st.session_state.pop(edit_key, None)
                                 st.rerun()
-                        if n_col.button("Cancel", key=f"no_del_{note_id}"):
-                            st.session_state.pop(f"confirm_del_{note_id}", None)
-                            st.rerun()
+                        else:
+                            # ── Colorful card view ────────────────────
+                            conf = note.get("confidence_score", "")
+                            date_str = note.get("date", "")
+                            time_str = note.get("time", "")
+                            pin_border = "border-left:4px solid #F59E0B;" if is_pinned else f"border:1px solid {color}30;"
+                            pin_badge  = ('<span style="background:#FEF3C7;color:#B45309;'
+                                          'border-radius:12px;padding:2px 7px;font-size:0.7rem;'
+                                          'font-weight:600;margin-left:6px;">📍</span>'
+                                          if is_pinned else "")
+                            st.markdown(
+                                f'<div style="background:{bg};border-radius:16px;padding:20px 18px;'
+                                f'min-height:170px;margin-bottom:6px;{pin_border}'
+                                f'box-shadow:0 1px 4px {color}18;">'
+                                f'<div style="font-size:0.95rem;font-weight:700;color:#1E1E2E;'
+                                f'line-height:1.5;margin-bottom:12px;">'
+                                f'{content[:140]}{"…" if len(content)>140 else ""}</div>'
+                                f'<div style="display:flex;justify-content:space-between;'
+                                f'align-items:center;flex-wrap:wrap;gap:4px;margin-top:auto;">'
+                                f'<span style="background:{color}22;color:{color};border-radius:12px;'
+                                f'padding:2px 9px;font-size:0.72rem;font-weight:600;">'
+                                f'{emoji} {cat}</span>{pin_badge}'
+                                f'<span style="font-size:0.72rem;color:#9CA3AF;">'
+                                f'{mood_em}&nbsp;{date_str}'
+                                f'{"&nbsp;·&nbsp;" + time_str if time_str else ""}'
+                                f'{"&nbsp;·&nbsp;🎯 " + str(conf) + "%" if conf else ""}'
+                                f'</span></div></div>',
+                                unsafe_allow_html=True
+                            )
+                            act1, act2, act3 = st.columns(3)
+                            if act1.button("✏️ Edit", key=f"open_edit_{note_id}",
+                                           use_container_width=True):
+                                st.session_state[edit_key] = True
+                                st.rerun()
+
+                            # Pin / Unpin
+                            pin_label = "📍 Unpin" if is_pinned else "📌 Pin"
+                            if act2.button(pin_label, key=f"pin_{note_id}",
+                                           use_container_width=True):
+                                if not is_pinned and all_pinned_count >= 5:
+                                    st.warning("You can pin up to 5 notes. Unpin one to pin this.")
+                                else:
+                                    row_num = _get_note_row_number(note_id, all_notes)
+                                    if row_num > 0:
+                                        new_pin = "false" if is_pinned else "true"
+                                        update_row("brain_notes", row_num, [
+                                            note.get("note_id"), note.get("content"),
+                                            note.get("category"), note.get("date"),
+                                            note.get("time"), note.get("embedding", ""),
+                                            note.get("confidence_score", ""),
+                                            note.get("connected_note_ids", ""),
+                                            note.get("day_of_week", ""),
+                                            note.get("created_time", ""),
+                                            note.get("mood", "Neutral"), new_pin,
+                                        ])
+                                        st.session_state.pop("brain_notes_cache", None)
+                                        st.rerun()
+
+                            if act3.button("🗑️ Delete", key=f"del_{note_id}",
+                                           use_container_width=True):
+                                st.session_state[f"confirm_del_{note_id}"] = True
+                                st.rerun()
+
+                            if st.session_state.get(f"confirm_del_{note_id}"):
+                                st.warning("Delete this note? Cannot be undone.")
+                                y_col, n_col = st.columns(2)
+                                if y_col.button("Yes, delete", key=f"yes_del_{note_id}",
+                                                type="primary"):
+                                    row_num = _get_note_row_number(note_id, all_notes)
+                                    if row_num > 0:
+                                        delete_row("brain_notes", row_num)
+                                        log_activity("Brain Note", f"Deleted: {content[:50]}")
+                                        st.session_state.pop(f"confirm_del_{note_id}", None)
+                                        st.session_state.pop("brain_notes_cache", None)
+                                        st.session_state.pop("chroma_initialized", None)
+                                        st.rerun()
+                                if n_col.button("Cancel", key=f"no_del_{note_id}"):
+                                    st.session_state.pop(f"confirm_del_{note_id}", None)
+                                    st.rerun()
+
+        # ── Pinned section ────────────────────────────────────────────
+        if pinned_notes:
+            st.markdown(f"**📍 Pinned Notes ({len(pinned_notes)}/5)**")
+            _render_note_grid(pinned_notes)
+            st.markdown("---")
+
+        # ── All other notes ───────────────────────────────────────────
+        _render_note_grid(unpinned_notes)
 
     # ── TAB 3: ASK MY BRAIN ──────────────────────────────────────────
     with tab3:
@@ -557,35 +744,21 @@ def show():
                     st.warning(f"Imported {saved}. {failed} failed.")
                 st.rerun()
 
-    # ── BRAIN MAP ────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("🗺️ Brain Map")
-    st.caption("Visual map of all your notes.")
-
-    if "show_brain_map" not in st.session_state:
-        st.session_state.show_brain_map = False
-
-    col_show, col_hide = st.columns([1, 1])
-    if col_show.button("🗺️ Show Map", use_container_width=True,
-                       type="primary" if not st.session_state.show_brain_map else "secondary"):
-        st.session_state.show_brain_map = True
-    if col_hide.button("✕ Hide", use_container_width=True):
-        st.session_state.show_brain_map = False
-
-    if st.session_state.show_brain_map:
-        from modules.brain.brain_map import render_map
-        render_map()
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────
 
 def _do_save(content: str, category: str, confidence: int, all_notes: list):
-    """Save note, then asynchronously check for contradictions."""
+    """Save note, detect mood, then check for contradictions."""
     with st.spinner("Saving…"):
-        save_note(content, category, confidence)
+        mood = detect_mood(content)
+        mood_emoji = MOOD_EMOJI.get(mood, "⚪")
+        save_note(content, category, confidence, mood)
         st.session_state.chroma_note_count = get_note_count()
         st.session_state.pop("brain_notes_cache", None)
-        st.success(f"✅ Saved to **{category}** at {now_time_str()}")
+        # Clear template + voice state after save
+        st.session_state.pop("_last_voice_file", None)
+        st.success(f"✅ Saved to **{category}** at {now_time_str()} {mood_emoji} {mood}")
 
     # Contradiction check (runs after save)
     with st.spinner("Checking for contradictions…"):

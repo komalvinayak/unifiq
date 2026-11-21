@@ -17,7 +17,34 @@ from ai.embeddings_client import set_key_index as set_embed_key_index
 from config.settings import GEMINI_KEYS, GROQ_API_KEY, AVAILABLE_MODELS
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
-from modules.brain.brain_core import categorize_note, save_note
+from modules.brain.brain_core import categorize_note, save_note, categorize_note_with_confidence, detect_mood
+
+# ── QUICK CAPTURE DIALOG ─────────────────────────────────────────────
+_HAS_DIALOG = hasattr(st, "dialog")
+
+if _HAS_DIALOG:
+    @st.dialog("✍️ Quick Capture")
+    def _quick_capture_dialog():
+        with st.form("qc_dialog_form"):
+            thought = st.text_area(
+                "Drop your thought...", height=130,
+                placeholder="Idea, learning, vent — anything on your mind.",
+            )
+            submitted = st.form_submit_button(
+                "Save instantly ⚡", type="primary", use_container_width=True
+            )
+        if submitted:
+            if thought.strip():
+                with st.spinner("Categorizing + saving…"):
+                    cat, conf = categorize_note_with_confidence(thought.strip())
+                    mood = detect_mood(thought.strip())
+                    save_note(thought.strip(), cat, conf, mood)
+                    st.session_state.pop("brain_notes_cache", None)
+                    st.session_state.chroma_note_count = get_note_count()
+                st.success("✅ Thought captured!")
+                st.rerun()
+            else:
+                st.warning("Write something first.")
 
 
 # ── STARTUP ──────────────────────────────────────────────────────────
@@ -131,6 +158,28 @@ hr { border-color: #E5E7EB !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── FLOATING QUICK CAPTURE BUTTON ────────────────────────────────────
+st.markdown("""
+<style>
+a.qc-fab {
+    position: fixed;
+    bottom: 30px; right: 30px;
+    z-index: 9999;
+    background: #4F46E5; color: #fff !important;
+    border-radius: 50px;
+    padding: 12px 22px;
+    font-size: 15px; font-weight: 600;
+    text-decoration: none !important;
+    box-shadow: 0 4px 15px rgba(79,70,229,0.4);
+    transition: background 0.15s;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+}
+a.qc-fab:hover { background: #4338CA !important; }
+</style>
+<a class="qc-fab" href="?qc_open=1">✍️ Quick Capture</a>
+""", unsafe_allow_html=True)
+
 
 # ── SIDEBAR ──────────────────────────────────────────────────────────
 with st.sidebar:
@@ -219,5 +268,52 @@ with st.sidebar:
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────
+
+# Quick Capture via floating button (query param trigger)
+# Use new st.query_params (Streamlit ≥ 1.30) or fall back to experimental API
+try:
+    _qc_params = st.query_params
+    _qc_open = _qc_params.get("qc_open") == "1"
+    if _qc_open and "qc_open" in _qc_params:
+        del _qc_params["qc_open"]
+except AttributeError:
+    _raw = st.experimental_get_query_params()
+    _qc_open = _raw.get("qc_open", [""])[0] == "1"
+    if _qc_open:
+        st.experimental_set_query_params()
+
+if _qc_open:
+    if _HAS_DIALOG:
+        _quick_capture_dialog()
+    else:
+        st.session_state["show_qc_fallback"] = True
+
+# Fallback capture form (Streamlit < 1.37)
+if not _HAS_DIALOG and st.session_state.get("show_qc_fallback"):
+    with st.container():
+        st.markdown("### ✍️ Quick Capture")
+        with st.form("qc_fallback_form"):
+            thought = st.text_area("Drop your thought...", height=100)
+            c1, c2 = st.columns([3, 1])
+            submitted = c1.form_submit_button("Save instantly ⚡", type="primary")
+            cancelled = c2.form_submit_button("✕ Close")
+        if cancelled:
+            st.session_state.pop("show_qc_fallback", None)
+            st.rerun()
+        if submitted:
+            if thought.strip():
+                with st.spinner("Saving…"):
+                    cat, conf = categorize_note_with_confidence(thought.strip())
+                    mood = detect_mood(thought.strip())
+                    save_note(thought.strip(), cat, conf, mood)
+                    st.session_state.pop("brain_notes_cache", None)
+                    st.session_state.chroma_note_count = get_note_count()
+                st.success("✅ Thought captured!")
+                st.session_state.pop("show_qc_fallback", None)
+                st.rerun()
+            else:
+                st.warning("Write something first.")
+        st.divider()
+
 from modules.brain.brain_core import show
 show()

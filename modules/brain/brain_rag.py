@@ -113,6 +113,51 @@ Answer based ONLY on these notes. Be concise and direct. If the notes don't have
     return answer, scored_notes
 
 
+def _apply_browse_filters(notes: list, cat_filter: str, date_from, date_to, keyword: str) -> list:
+    result = notes
+    if cat_filter != "All":
+        result = [n for n in result if n.get("category") == cat_filter]
+    if keyword.strip():
+        kw = keyword.strip().lower()
+        result = [n for n in result if kw in n.get("content", "").lower()]
+    if date_from or date_to:
+        filtered = []
+        for n in result:
+            nd = _parse_note_date(n.get("date", "") or n.get("created_time", ""))
+            if nd:
+                if date_from and nd < date_from:
+                    continue
+                if date_to and nd > date_to:
+                    continue
+            filtered.append(n)
+        result = filtered
+    return result
+
+
+def _render_note_card(n: dict):
+    cat     = n.get("category", "Personal")
+    color   = _CAT_COLOR.get(cat, "#6B7280")
+    emoji   = CAT_EMOJI.get(cat, "📝")
+    date    = n.get("date", "")
+    time    = n.get("time", "")
+    content = n.get("content", "")
+    conf    = n.get("confidence_score", "")
+    conf_txt = f" · {conf}% conf" if conf else ""
+    st.markdown(
+        f'<div style="margin:6px 0;padding:12px 14px;background:#F8F9FA;'
+        f'border:1px solid #E5E7EB;border-radius:10px;'
+        f'border-left:3px solid {color};">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
+        f'<span style="background:{color}20;color:{color};border-radius:12px;'
+        f'padding:2px 10px;font-size:0.74rem;font-weight:600;">{emoji} {cat}</span>'
+        f'<span style="font-size:0.72rem;color:#9CA3AF;">📅 {date}{"  🕐 " + time if time else ""}{conf_txt}</span>'
+        f'</div>'
+        f'<div style="font-size:0.9rem;color:#1E1E2E;line-height:1.55;">{content}</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+
 def _add_to_history(question: str):
     history = st.session_state.get("brain_search_history", [])
     if question in history:
@@ -179,10 +224,9 @@ def ask_brain():
     h1, h2 = st.columns([7, 1])
     with h1:
         st.markdown("### 🔍 Ask Your Brain")
-        st.caption("Ask anything — keyword, topic, date, or a full question.")
     with h2:
         if st.session_state.brain_chat:
-            if st.button("Clear", use_container_width=True):
+            if st.button("Clear", use_container_width=True, key="chat_clear_btn"):
                 st.session_state.brain_chat = []
                 st.rerun()
 
@@ -201,26 +245,17 @@ def ask_brain():
         with fc4:
             date_to_input = st.date_input("To date", value=None, key="rag_date_to")
 
-    # ── QUICK PROMPTS ────────────────────────────────────────────────
+    # ── EMPTY STATE ──────────────────────────────────────────────────
     if not st.session_state.brain_chat:
         st.markdown(
-            "<div style='color:#9CA3AF;font-size:0.85rem;margin:12px 0 6px;'>Try asking:</div>",
-            unsafe_allow_html=True
+            '<div style="text-align:center;padding:40px 0 20px;">'
+            '<div style="font-size:2rem;margin-bottom:12px;">🧠</div>'
+            '<div style="font-size:1rem;color:#6B7280;font-weight:500;">Ask anything about your notes</div>'
+            '<div style="font-size:0.85rem;color:#9CA3AF;margin-top:6px;">'
+            'Try a topic, a keyword, a date range, or a full question</div>'
+            '</div>',
+            unsafe_allow_html=True,
         )
-        starters = [
-            "What do I know about RAG?",
-            "Show my cybersecurity notes",
-            "What have I written about productivity?",
-            "Summarise my learning notes",
-        ]
-        c1, c2 = st.columns(2)
-        for i, s in enumerate(starters):
-            col = c1 if i % 2 == 0 else c2
-            if col.button(s, key=f"qs_{i}", use_container_width=True):
-                with st.spinner("Searching your brain…"):
-                    _process_question(s, cat_filter, date_from_input, date_to_input, keyword_filter)
-                st.rerun()
-        st.divider()
 
     # ── CHAT MESSAGES ────────────────────────────────────────────────
     for msg in st.session_state.brain_chat:
@@ -288,15 +323,3 @@ def ask_brain():
                 keyword_filter,
             )
         st.rerun()
-
-    # ── RECENT SEARCHES ──────────────────────────────────────────────
-    history = st.session_state.get("brain_search_history", [])
-    if history and st.session_state.brain_chat:
-        with st.expander(f"🕐 Recent searches ({len(history)})", expanded=False):
-            cols = st.columns(3)
-            for i, q in enumerate(history[:9]):
-                label = q[:28] + "…" if len(q) > 28 else q
-                if cols[i % 3].button(label, key=f"h_{i}", use_container_width=True):
-                    with st.spinner("Searching…"):
-                        _process_question(q, cat_filter, date_from_input, date_to_input, keyword_filter)
-                    st.rerun()
