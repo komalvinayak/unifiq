@@ -14,7 +14,7 @@ st.set_page_config(
 from utils.date_utils import now_date_str, now_time_str
 from ai.gemini_client import get_last_error, set_model, get_model_index, get_selected_model_display
 from ai.embeddings_client import set_key_index as set_embed_key_index
-from config.settings import GEMINI_KEYS, GROQ_API_KEY, AVAILABLE_MODELS
+from config.settings import GEMINI_KEYS, GROQ_API_KEY, AVAILABLE_MODELS, BRAIN_CATEGORIES
 from database.sheets_client import get_all_rows
 from database.chroma_client import rebuild_from_sheets, get_note_count
 from modules.brain.brain_core import categorize_note, save_note, categorize_note_with_confidence, detect_mood
@@ -22,29 +22,65 @@ from modules.brain.brain_core import categorize_note, save_note, categorize_note
 # ── QUICK CAPTURE DIALOG ─────────────────────────────────────────────
 _HAS_DIALOG = hasattr(st, "dialog")
 
+_QC_ADD_NEW = "➕ Add new category…"
+
 if _HAS_DIALOG:
     @st.dialog("✍️ Quick Capture")
     def _quick_capture_dialog():
-        with st.form("qc_dialog_form"):
-            thought = st.text_area(
-                "Drop your thought...", height=130,
-                placeholder="Idea, learning, vent — anything on your mind.",
-            )
-            submitted = st.form_submit_button(
-                "Save instantly ⚡", type="primary", use_container_width=True
-            )
-        if submitted:
-            if thought.strip():
-                with st.spinner("Categorizing + saving…"):
-                    cat, conf = categorize_note_with_confidence(thought.strip())
-                    mood = detect_mood(thought.strip())
-                    save_note(thought.strip(), cat, conf, mood)
-                    st.session_state.pop("brain_notes_cache", None)
-                    st.session_state.chroma_note_count = get_note_count()
-                st.success("✅ Thought captured!")
-                st.rerun()
-            else:
+        thought = st.text_area(
+            "Drop your thought…", height=120,
+            placeholder="Idea, learning, vent — anything on your mind.",
+            key="qc_thought",
+        )
+
+        # Build category list from base + any user-added ones
+        _custom = st.session_state.get("qc_custom_categories", [])
+        _all_cats = BRAIN_CATEGORIES + [c for c in _custom if c not in BRAIN_CATEGORIES]
+
+        cat_choice = st.selectbox(
+            "Category",
+            options=["🤖 Auto-detect"] + _all_cats + [_QC_ADD_NEW],
+            key="qc_cat_select",
+        )
+
+        new_cat_name = ""
+        if cat_choice == _QC_ADD_NEW:
+            new_cat_name = st.text_input(
+                "New category name", placeholder="e.g. Health, Travel…",
+                key="qc_new_cat_input",
+            ).strip()
+
+        if st.button("Save ⚡", type="primary", use_container_width=True, key="qc_save_btn"):
+            if not thought.strip():
                 st.warning("Write something first.")
+                return
+
+            # Resolve final category
+            if cat_choice == _QC_ADD_NEW:
+                if not new_cat_name:
+                    st.warning("Enter a name for the new category.")
+                    return
+                final_cat = new_cat_name.title()
+                # Persist the new category for this session
+                _custom_updated = st.session_state.get("qc_custom_categories", [])
+                if final_cat not in _custom_updated:
+                    _custom_updated.append(final_cat)
+                st.session_state["qc_custom_categories"] = _custom_updated
+                conf = 100
+            elif cat_choice == "🤖 Auto-detect":
+                with st.spinner("Detecting category…"):
+                    final_cat, conf = categorize_note_with_confidence(thought.strip())
+            else:
+                final_cat = cat_choice
+                conf = 100
+
+            with st.spinner("Saving…"):
+                mood = detect_mood(thought.strip())
+                save_note(thought.strip(), final_cat, conf, mood)
+                st.session_state.pop("brain_notes_cache", None)
+                st.session_state.chroma_note_count = get_note_count()
+            st.success(f"✅ Saved as **{final_cat}**")
+            st.rerun()
 
 
 # ── STARTUP ──────────────────────────────────────────────────────────
@@ -239,32 +275,6 @@ with st.sidebar:
             st.rerun()
 
     st.write(f"📅 `{now_date_str()}`  🕐 `{now_time_str()} IST`")
-    st.divider()
-
-    # Quick Capture
-    st.caption("**⚡ Quick Capture**")
-    quick_note = st.text_area(
-        "Quick thought",
-        placeholder="Type a thought and press Save…",
-        height=80,
-        label_visibility="collapsed",
-        key="sidebar_quick_note"
-    )
-    if st.button("Save 🧠", use_container_width=True, key="sidebar_save_btn", type="primary"):
-        if quick_note.strip():
-            with st.spinner("Saving…"):
-                try:
-                    category = categorize_note(quick_note.strip())
-                    save_note(quick_note.strip(), category)
-                    st.session_state.chroma_note_count = get_note_count()
-                    st.session_state.pop("brain_notes_cache", None)
-                    st.success(f"✅ {category}")
-                    st.session_state.sidebar_quick_note = ""
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Save failed: {e}")
-        else:
-            st.warning("Write something first.")
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────
@@ -292,8 +302,14 @@ if _qc_open:
 if not _HAS_DIALOG and st.session_state.get("show_qc_fallback"):
     with st.container():
         st.markdown("### ✍️ Quick Capture")
+        _fb_custom = st.session_state.get("qc_custom_categories", [])
+        _fb_cats = BRAIN_CATEGORIES + [c for c in _fb_custom if c not in BRAIN_CATEGORIES]
         with st.form("qc_fallback_form"):
-            thought = st.text_area("Drop your thought...", height=100)
+            thought = st.text_area("Drop your thought…", height=100)
+            cat_choice_fb = st.selectbox("Category", ["🤖 Auto-detect"] + _fb_cats + [_QC_ADD_NEW])
+            new_cat_fb = ""
+            if cat_choice_fb == _QC_ADD_NEW:
+                new_cat_fb = st.text_input("New category name", placeholder="e.g. Health, Travel…").strip()
             c1, c2 = st.columns([3, 1])
             submitted = c1.form_submit_button("Save instantly ⚡", type="primary")
             cancelled = c2.form_submit_button("✕ Close")
@@ -302,15 +318,43 @@ if not _HAS_DIALOG and st.session_state.get("show_qc_fallback"):
             st.rerun()
         if submitted:
             if thought.strip():
-                with st.spinner("Saving…"):
-                    cat, conf = categorize_note_with_confidence(thought.strip())
-                    mood = detect_mood(thought.strip())
-                    save_note(thought.strip(), cat, conf, mood)
-                    st.session_state.pop("brain_notes_cache", None)
-                    st.session_state.chroma_note_count = get_note_count()
-                st.success("✅ Thought captured!")
-                st.session_state.pop("show_qc_fallback", None)
-                st.rerun()
+                if cat_choice_fb == _QC_ADD_NEW:
+                    if not new_cat_fb:
+                        st.warning("Enter a name for the new category.")
+                    else:
+                        final_cat_fb = new_cat_fb.title()
+                        _fb_upd = st.session_state.get("qc_custom_categories", [])
+                        if final_cat_fb not in _fb_upd:
+                            _fb_upd.append(final_cat_fb)
+                        st.session_state["qc_custom_categories"] = _fb_upd
+                        conf_fb = 100
+                        with st.spinner("Saving…"):
+                            mood = detect_mood(thought.strip())
+                            save_note(thought.strip(), final_cat_fb, conf_fb, mood)
+                            st.session_state.pop("brain_notes_cache", None)
+                            st.session_state.chroma_note_count = get_note_count()
+                        st.success(f"✅ Saved as **{final_cat_fb}**")
+                        st.session_state.pop("show_qc_fallback", None)
+                        st.rerun()
+                elif cat_choice_fb == "🤖 Auto-detect":
+                    with st.spinner("Saving…"):
+                        cat_fb, conf_fb = categorize_note_with_confidence(thought.strip())
+                        mood = detect_mood(thought.strip())
+                        save_note(thought.strip(), cat_fb, conf_fb, mood)
+                        st.session_state.pop("brain_notes_cache", None)
+                        st.session_state.chroma_note_count = get_note_count()
+                    st.success(f"✅ Saved as **{cat_fb}**")
+                    st.session_state.pop("show_qc_fallback", None)
+                    st.rerun()
+                else:
+                    with st.spinner("Saving…"):
+                        mood = detect_mood(thought.strip())
+                        save_note(thought.strip(), cat_choice_fb, 100, mood)
+                        st.session_state.pop("brain_notes_cache", None)
+                        st.session_state.chroma_note_count = get_note_count()
+                    st.success(f"✅ Saved as **{cat_choice_fb}**")
+                    st.session_state.pop("show_qc_fallback", None)
+                    st.rerun()
             else:
                 st.warning("Write something first.")
         st.divider()
