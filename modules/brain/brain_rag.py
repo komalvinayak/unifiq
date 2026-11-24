@@ -89,14 +89,18 @@ def rag_answer(question: str, cat_filter: str = "All",
         for i, (n, _) in enumerate(scored_notes)
     )
 
-    prompt = f"""You are Mufakkir — a personal brain assistant that helps the user recall and understand their own saved notes.
+    prompt = f"""You are Mufakkir — a friendly personal brain assistant. You help the user recall their saved notes AND answer general questions naturally.
 
 The user asked: "{question}"
 
 Relevant notes from their knowledge base:
 {context}
 
-Answer based ONLY on these notes. Be concise and direct. If the notes don't have enough info, say so honestly."""
+INSTRUCTIONS:
+- For greetings, small talk, or general questions (like "how are you", "what can you do", "who are you"): respond warmly and naturally as a helpful assistant. Do NOT say "I don't have notes about that."
+- For questions about the user's own thoughts/memories: answer using the notes above.
+- For general knowledge questions: answer from your knowledge, mentioning relevant notes if any.
+Be concise and conversational."""
 
     answer = generate(prompt)
 
@@ -314,7 +318,7 @@ def ask_brain():
             sent = st.form_submit_button("➤", use_container_width=True)
 
     if sent and question.strip():
-        with st.spinner("Searching your brain…"):
+        with st.spinner("Ctrl+F in progress..."):
             _process_question(
                 question.strip(),
                 cat_filter,

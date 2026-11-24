@@ -235,7 +235,7 @@ def show():
 
             # Get UNI response
             with st.chat_message("assistant"):
-                with st.spinner("UNI is thinking..."):
+                with st.spinner("Ctrl+F in progress..."):
                     try:
                         prompt = build_uni_prompt(user_input, projects, tasks)
                         raw_response = generate(prompt)

@@ -274,44 +274,40 @@ def show():
         st.session_state.brain_notes_cache = get_all_rows("brain_notes")
     all_notes = st.session_state.brain_notes_cache
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "💭 Dump Thought", "📋 Browse Notes", "🔍 Ask My Brain",
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "💭 Dump Thought", "📋 Browse Notes",
         "📊 Insights", "📥 Bulk Import",
     ])
 
     # ── TAB 1: DUMP THOUGHT ──────────────────────────────────────────
     with tab1:
-        col_main, col_side = st.columns([2, 1])
+        st.subheader("What's on your mind?")
+        st.caption("Write anything — an idea, something you learned, a quick thought.")
 
-        with col_main:
-            st.subheader("What's on your mind?")
-            st.caption("Write anything — an idea, something you learned, a quick thought.")
+        # ── TEMPLATES ────────────────────────────────────────────────
+        if st.session_state.pop("_voice_success_msg", False):
+            st.success("✅ Voice transcribed — review and save")
 
-            # ── TEMPLATES ────────────────────────────────────────────
-            if st.session_state.pop("_voice_success_msg", False):
-                st.success("✅ Voice transcribed — review and save")
+        t1, t2, t3 = st.columns(3)
+        if t1.button("💡 Idea", key="tmpl_idea", use_container_width=True):
+            st.session_state["dump_thought_input"] = "💡 Idea:\nProblem: \nSolution: \nNext step: \n"
+            st.rerun()
+        if t2.button("📚 Learning", key="tmpl_learning", use_container_width=True):
+            st.session_state["dump_thought_input"] = "📚 Learning:\nWhat I learned: \nWhy it matters: \nHow I'll use it: \n"
+            st.rerun()
+        if t3.button("😤 Vent", key="tmpl_vent", use_container_width=True):
+            st.session_state["dump_thought_input"] = "😤 Vent:\nWhat happened: \nHow I feel: \nWhat I'll do: \n"
+            st.rerun()
 
-            t1, t2, t3 = st.columns(3)
-            if t1.button("💡 Idea", key="tmpl_idea", use_container_width=True):
-                st.session_state["dump_thought_input"] = "💡 Idea:\nProblem: \nSolution: \nNext step: \n"
-                st.rerun()
-            if t2.button("📚 Learning", key="tmpl_learning", use_container_width=True):
-                st.session_state["dump_thought_input"] = "📚 Learning:\nWhat I learned: \nWhy it matters: \nHow I'll use it: \n"
-                st.rerun()
-            if t3.button("😤 Vent", key="tmpl_vent", use_container_width=True):
-                st.session_state["dump_thought_input"] = "😤 Vent:\nWhat happened: \nHow I feel: \nWhat I'll do: \n"
-                st.rerun()
+        # ── VOICE + TEXTAREA SIDE BY SIDE ────────────────────────────
+        _HAS_AUDIO_INPUT = hasattr(st, "audio_input") or hasattr(st, "experimental_audio_input")
+        _audio_input_fn = getattr(st, "audio_input", None) or getattr(st, "experimental_audio_input", None)
 
-            # ── VOICE INPUT ───────────────────────────────────────────
-            _HAS_AUDIO_INPUT = hasattr(st, "audio_input") or hasattr(st, "experimental_audio_input")
-            _audio_input_fn = getattr(st, "audio_input", None) or getattr(st, "experimental_audio_input", None)
+        rec_col, txt_col = st.columns([1, 2])
+
+        with rec_col:
             if _HAS_AUDIO_INPUT and _audio_input_fn is not None:
-                # Live mic recording
-                if st.session_state.get("_voice_success_msg"):
-                    st.success("✅ Voice transcribed — text filled below")
-                    st.session_state.pop("_voice_success_msg", None)
-                else:
-                    st.caption("🎙️ Record a voice note — it will auto-fill the box below")
+                st.caption("🎙️ Record a voice note")
                 live_audio = _audio_input_fn("Record", key="live_mic",
                                              label_visibility="collapsed")
                 if live_audio is not None:
@@ -336,8 +332,7 @@ def show():
                                 st.error(f"Transcription failed: {_ve}")
                         st.rerun()
             else:
-                # Fallback: file upload (older Streamlit)
-                st.caption("🎙️ Upload a voice note — it will auto-fill the box below")
+                st.caption("🎙️ Upload a voice note")
                 voice_file = st.file_uploader(
                     "Upload voice",
                     type=["mp3", "wav", "m4a", "ogg"],
@@ -362,6 +357,7 @@ def show():
                             st.error(f"Transcription failed: {_ve}")
                     st.rerun()
 
+        with txt_col:
             note_input = st.text_area(
                 "Your thought",
                 placeholder="e.g. Good managers ask questions before giving answers…",
@@ -370,137 +366,132 @@ def show():
                 key="dump_thought_input",
             )
 
-            # Proactive surfacing while typing — cached by input hash to avoid per-keystroke API calls
-            if note_input.strip() and len(note_input.strip()) >= 15:
-                _phash = hash(note_input.strip()[:200])
-                if st.session_state.get("_proactive_hash") != _phash:
-                    related = get_related_to_input(note_input.strip(), n=3)
-                    st.session_state["_proactive_hash"] = _phash
-                    st.session_state["_proactive_cache"] = related
-                else:
-                    related = st.session_state.get("_proactive_cache", [])
-                if related:
-                    with col_side:
-                        st.markdown("""
-<div style="background:#F8F9FA;border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;margin-top:36px;">
+        # ── PROACTIVE SURFACING ───────────────────────────────────────
+        if note_input.strip() and len(note_input.strip()) >= 15:
+            _phash = hash(note_input.strip()[:200])
+            if st.session_state.get("_proactive_hash") != _phash:
+                related = get_related_to_input(note_input.strip(), n=3)
+                st.session_state["_proactive_hash"] = _phash
+                st.session_state["_proactive_cache"] = related
+            else:
+                related = st.session_state.get("_proactive_cache", [])
+            if related:
+                st.markdown("""
+<div style="background:#F8F9FA;border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;margin-top:8px;">
   <div style="font-size:0.8rem;font-weight:600;color:#4F46E5;margin-bottom:8px;">
     💡 You thought about this before:
   </div>
 """, unsafe_allow_html=True)
-                        for rc, rcat, rscore in related:
-                            pct = int(rscore * 100)
-                            emoji = CAT_EMOJI.get(rcat, "📝")
-                            st.markdown(
-                                f'<div style="margin:6px 0;padding:8px 10px;background:#fff;'
-                                f'border:1px solid #E5E7EB;border-radius:8px;font-size:0.82rem;color:#374151;">'
-                                f'<span style="font-size:0.72rem;color:#6B7280;">{emoji} {rcat} · {pct}% match</span><br>'
-                                f'{rc[:100]}{"…" if len(rc)>100 else ""}</div>',
-                                unsafe_allow_html=True
-                            )
-                        st.markdown("</div>", unsafe_allow_html=True)
+                for rc, rcat, rscore in related:
+                    pct = int(rscore * 100)
+                    emoji = CAT_EMOJI.get(rcat, "📝")
+                    st.markdown(
+                        f'<div style="margin:6px 0;padding:8px 10px;background:#fff;'
+                        f'border:1px solid #E5E7EB;border-radius:8px;font-size:0.82rem;color:#374151;">'
+                        f'<span style="font-size:0.72rem;color:#6B7280;">{emoji} {rcat} · {pct}% match</span><br>'
+                        f'{rc[:100]}{"…" if len(rc)>100 else ""}</div>',
+                        unsafe_allow_html=True
+                    )
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            # Categorization flow
-            auto_cat = st.toggle("Auto-categorize with AI", value=True, key="auto_cat_toggle")
+        # Categorization flow
+        auto_cat = st.toggle("Auto-categorize with AI", value=True, key="auto_cat_toggle")
 
-            if not auto_cat:
-                manual_cat = st.selectbox("Category", BRAIN_CATEGORIES, key="manual_cat_select")
+        if not auto_cat:
+            manual_cat = st.selectbox("Category", BRAIN_CATEGORIES, key="manual_cat_select")
 
-            if st.button("Analyse & Save 🧠", type="primary", use_container_width=True, key="save_btn"):
-                if not note_input.strip():
-                    st.warning("Please write something first.")
-                else:
-                    if auto_cat:
-                        with st.spinner("Thinking…"):
-                            cat, conf = categorize_note_with_confidence(note_input.strip())
+        if st.button("Analyse & Save 🧠", type="primary", use_container_width=True, key="save_btn"):
+            if not note_input.strip():
+                st.warning("Please write something first.")
+            else:
+                if auto_cat:
+                    with st.spinner("Thinking…"):
+                        cat, conf = categorize_note_with_confidence(note_input.strip())
 
-                        if conf >= 70:
-                            # Show suggestion and let user confirm or change
-                            st.session_state["pending_note"] = note_input.strip()
-                            st.session_state["pending_cat"] = cat
-                            st.session_state["pending_conf"] = conf
-                            st.session_state["show_cat_confirm"] = True
-                        else:
-                            # Low confidence — ask user to pick manually
-                            st.session_state["pending_note"] = note_input.strip()
-                            st.session_state["pending_conf"] = conf
-                            st.session_state["show_low_conf"] = True
-                    else:
-                        # Manual — go straight to save
+                    if conf >= 70:
                         st.session_state["pending_note"] = note_input.strip()
-                        st.session_state["pending_cat"] = manual_cat
-                        st.session_state["show_final_confirm"] = True
+                        st.session_state["pending_cat"] = cat
+                        st.session_state["pending_conf"] = conf
+                        st.session_state["show_cat_confirm"] = True
+                    else:
+                        st.session_state["pending_note"] = note_input.strip()
+                        st.session_state["pending_conf"] = conf
+                        st.session_state["show_low_conf"] = True
+                else:
+                    st.session_state["pending_note"] = note_input.strip()
+                    st.session_state["pending_cat"] = manual_cat
+                    st.session_state["show_final_confirm"] = True
 
-            # ── Confirm category (high confidence) ───────────────────
-            if st.session_state.get("show_cat_confirm"):
-                cat  = st.session_state["pending_cat"]
-                conf = st.session_state["pending_conf"]
-                color = _CAT_COLOR.get(cat, "#4F46E5")
-                st.markdown(
-                    f'<div style="background:#F0F0FF;border:1px solid #C7D2FE;border-radius:10px;'
-                    f'padding:14px 16px;margin:10px 0;">'
-                    f'<span style="font-size:0.85rem;color:#4F46E5;font-weight:600;">AI Suggestion ({conf}% confident)</span><br>'
-                    f'<span style="font-size:1rem;color:#1E1E2E;font-weight:700;">{CAT_EMOJI.get(cat,"")} {cat}</span></div>',
-                    unsafe_allow_html=True
-                )
-                col_ok, col_change = st.columns(2)
-                if col_ok.button(f"✅ Yes, save as {cat}", key="confirm_cat_yes", type="primary"):
-                    _do_save(st.session_state["pending_note"], cat, conf, all_notes)
-                    st.session_state.pop("show_cat_confirm", None)
-                    st.session_state.pop("dump_thought_input", None)
-                    st.rerun()
+        # ── Confirm category (high confidence) ───────────────────────
+        if st.session_state.get("show_cat_confirm"):
+            cat  = st.session_state["pending_cat"]
+            conf = st.session_state["pending_conf"]
+            st.markdown(
+                f'<div style="background:#F0F0FF;border:1px solid #C7D2FE;border-radius:10px;'
+                f'padding:14px 16px;margin:10px 0;">'
+                f'<span style="font-size:0.85rem;color:#4F46E5;font-weight:600;">AI Suggestion ({conf}% confident)</span><br>'
+                f'<span style="font-size:1rem;color:#1E1E2E;font-weight:700;">{CAT_EMOJI.get(cat,"")} {cat}</span></div>',
+                unsafe_allow_html=True
+            )
+            col_ok, col_change = st.columns(2)
+            if col_ok.button(f"✅ Yes, save as {cat}", key="confirm_cat_yes", type="primary"):
+                _do_save(st.session_state["pending_note"], cat, conf, all_notes)
+                st.session_state.pop("show_cat_confirm", None)
+                st.session_state.pop("dump_thought_input", None)
+                st.rerun()
 
-                change_cat = col_change.selectbox(
-                    "Change to:", BRAIN_CATEGORIES,
-                    index=BRAIN_CATEGORIES.index(cat),
-                    key="override_cat_select"
-                )
-                if col_change.button("Save with this category", key="confirm_cat_override"):
-                    _do_save(st.session_state["pending_note"], change_cat, conf, all_notes)
-                    st.session_state.pop("show_cat_confirm", None)
-                    st.rerun()
+            change_cat = col_change.selectbox(
+                "Change to:", BRAIN_CATEGORIES,
+                index=BRAIN_CATEGORIES.index(cat),
+                key="override_cat_select"
+            )
+            if col_change.button("Save with this category", key="confirm_cat_override"):
+                _do_save(st.session_state["pending_note"], change_cat, conf, all_notes)
+                st.session_state.pop("show_cat_confirm", None)
+                st.rerun()
 
-            # ── Low confidence — ask user to pick ────────────────────
-            if st.session_state.get("show_low_conf"):
-                conf = st.session_state["pending_conf"]
-                st.warning(f"⚠️ AI is only {conf}% confident. Please pick the category:")
-                chosen_cat = st.selectbox("Category", BRAIN_CATEGORIES, key="low_conf_cat")
-                if st.button("Save with selected category", key="low_conf_save", type="primary"):
-                    _do_save(st.session_state["pending_note"], chosen_cat, conf, all_notes)
-                    st.session_state.pop("show_low_conf", None)
-                    st.rerun()
+        # ── Low confidence — ask user to pick ────────────────────────
+        if st.session_state.get("show_low_conf"):
+            conf = st.session_state["pending_conf"]
+            st.warning(f"⚠️ AI is only {conf}% confident. Please pick the category:")
+            chosen_cat = st.selectbox("Category", BRAIN_CATEGORIES, key="low_conf_cat")
+            if st.button("Save with selected category", key="low_conf_save", type="primary"):
+                _do_save(st.session_state["pending_note"], chosen_cat, conf, all_notes)
+                st.session_state.pop("show_low_conf", None)
+                st.rerun()
 
-            # ── Final confirm for manual mode ─────────────────────────
-            if st.session_state.get("show_final_confirm"):
-                cat = st.session_state["pending_cat"]
-                st.info(f"Save this note as **{cat}**?")
-                col_y, col_n = st.columns(2)
-                if col_y.button("✅ Save", key="final_save_yes", type="primary"):
-                    _do_save(st.session_state["pending_note"], cat, 100, all_notes)
-                    st.session_state.pop("show_final_confirm", None)
-                    st.rerun()
-                if col_n.button("Cancel", key="final_save_no"):
-                    st.session_state.pop("show_final_confirm", None)
-                    st.rerun()
+        # ── Final confirm for manual mode ─────────────────────────────
+        if st.session_state.get("show_final_confirm"):
+            cat = st.session_state["pending_cat"]
+            st.info(f"Save this note as **{cat}**?")
+            col_y, col_n = st.columns(2)
+            if col_y.button("✅ Save", key="final_save_yes", type="primary"):
+                _do_save(st.session_state["pending_note"], cat, 100, all_notes)
+                st.session_state.pop("show_final_confirm", None)
+                st.rerun()
+            if col_n.button("Cancel", key="final_save_no"):
+                st.session_state.pop("show_final_confirm", None)
+                st.rerun()
 
-            # ── Contradiction warning ─────────────────────────────────
-            if st.session_state.get("contradiction_warn"):
-                warn = st.session_state["contradiction_warn"]
-                st.markdown(
-                    f'<div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;'
-                    f'padding:14px 16px;margin:10px 0;">'
-                    f'<span style="font-size:0.9rem;color:#C2410C;font-weight:600;">'
-                    f'⚠️ On {warn["date"]} you thought:</span><br>'
-                    f'<em style="color:#374151;">"{warn["content"]}"</em><br>'
-                    f'<span style="font-size:0.85rem;color:#6B7280;">Has your view changed?</span></div>',
-                    unsafe_allow_html=True
-                )
-                col_upd, col_dis = st.columns(2)
-                if col_upd.button("✍️ Updated View", key="contra_update"):
-                    st.session_state.pop("contradiction_warn", None)
-                    st.info("Great — your new note is already saved with your updated thinking.")
-                if col_dis.button("Dismiss", key="contra_dismiss"):
-                    st.session_state.pop("contradiction_warn", None)
-                    st.rerun()
+        # ── Contradiction warning ─────────────────────────────────────
+        if st.session_state.get("contradiction_warn"):
+            warn = st.session_state["contradiction_warn"]
+            st.markdown(
+                f'<div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;'
+                f'padding:14px 16px;margin:10px 0;">'
+                f'<span style="font-size:0.9rem;color:#C2410C;font-weight:600;">'
+                f'⚠️ On {warn["date"]} you thought:</span><br>'
+                f'<em style="color:#374151;">"{warn["content"]}"</em><br>'
+                f'<span style="font-size:0.85rem;color:#6B7280;">Has your view changed?</span></div>',
+                unsafe_allow_html=True
+            )
+            col_upd, col_dis = st.columns(2)
+            if col_upd.button("✍️ Updated View", key="contra_update"):
+                st.session_state.pop("contradiction_warn", None)
+                st.info("Great — your new note is already saved with your updated thinking.")
+            if col_dis.button("Dismiss", key="contra_dismiss"):
+                st.session_state.pop("contradiction_warn", None)
+                st.rerun()
 
         # Quick stats (below the input area)
         st.divider()
@@ -695,18 +686,13 @@ def show():
         # ── All other notes ───────────────────────────────────────────
         _render_note_grid(unpinned_notes)
 
-    # ── TAB 3: ASK MY BRAIN ──────────────────────────────────────────
+    # ── TAB 3: INSIGHTS ──────────────────────────────────────────────
     with tab3:
-        from modules.brain.brain_rag import ask_brain
-        ask_brain()
-
-    # ── TAB 4: INSIGHTS ──────────────────────────────────────────────
-    with tab4:
         from modules.brain.brain_insights import show_insights
         show_insights(all_notes)
 
-    # ── TAB 5: BULK IMPORT ───────────────────────────────────────────
-    with tab5:
+    # ── TAB 4: BULK IMPORT ───────────────────────────────────────────
+    with tab4:
         st.subheader("Bulk Import Notes")
         st.caption("Paste multiple thoughts — one per line (or paste a WhatsApp export).")
 

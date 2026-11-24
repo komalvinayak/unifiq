@@ -1,7 +1,6 @@
-import json
 import math
 import streamlit as st
-import streamlit.components.v1 as components
+import plotly.graph_objects as go
 
 CATEGORY_COLORS = {
     "Work":      "#4F46E5",
@@ -69,136 +68,72 @@ def render_topic_clouds(rows):
         return
 
     clusters = _cluster_by_category(rows)
+    if not clusters:
+        st.info("No notes yet.")
+        return
+
     positions = _cluster_positions(len(clusters))
+    fig = go.Figure()
 
-    cluster_data = [
-        {"notes": c["notes"], "color": c["color"], "label": c["label"],
-         "cx": positions[i][0], "cy": positions[i][1]}
-        for i, c in enumerate(clusters)
-    ]
-    clusters_js = json.dumps(cluster_data, ensure_ascii=True)
+    for i, cl in enumerate(clusters):
+        cx, cy = positions[i]
+        notes = cl["notes"]
+        color = cl["color"]
+        label = cl["label"]
+        n = len(notes)
+        if n == 0:
+            continue
 
-    html = f"""<!DOCTYPE html><html><head>
-<style>
-  body{{margin:0;background:#ffffff;overflow:hidden;font-family:Inter,Arial,sans-serif;}}
-  canvas{{display:block;}}
-  #tip2{{position:absolute;display:none;background:#1e293b;color:#f8fafc;
-         border:1px solid #334155;border-radius:8px;padding:8px 12px;
-         font:12px/1.5 Inter,sans-serif;max-width:280px;pointer-events:none;
-         z-index:10;word-break:break-word;box-shadow:0 4px 14px rgba(0,0,0,0.2);}}
-</style></head><body>
-<canvas id="c2"></canvas>
-<div id="tip2"></div>
-<script>
-const CLUSTERS = {clusters_js};
-const W = Math.min(window.innerWidth, 940), H = 580;
-const canvas = document.getElementById("c2");
-canvas.width = W; canvas.height = H;
-const ctx = canvas.getContext("2d");
-const tip = document.getElementById("tip2");
-let time = 0;
+        radius = min(130, max(68, 60 + n * 12))
 
-function hexToRgba(hex, a) {{
-  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-  return `rgba(${{r}},${{g}},${{b}},${{a}})`;
-}}
+        # Halo circle
+        theta = [j * 2 * math.pi / 60 for j in range(61)]
+        fig.add_trace(go.Scatter(
+            x=[cx + radius * math.cos(t) for t in theta],
+            y=[cy + radius * math.sin(t) for t in theta],
+            mode="lines",
+            line=dict(color=color, width=1.5),
+            opacity=0.35,
+            showlegend=False,
+            hoverinfo="skip",
+        ))
 
-const BASE_W = 900;
-CLUSTERS.forEach(cl => {{
-  cl.cx = Math.round(cl.cx * W / BASE_W);
-  cl.cy = Math.round(cl.cy);
-  cl._dots = [];
-}});
+        # Category label
+        fig.add_annotation(x=cx, y=cy + 8, text=f"<b>{label}</b>",
+                           showarrow=False, font=dict(size=13, color=color), yanchor="bottom")
+        fig.add_annotation(x=cx, y=cy - 8,
+                           text=f"{n} note{'s' if n != 1 else ''}",
+                           showarrow=False, font=dict(size=10, color="#64748b"), yanchor="top")
 
-function drawCloud(cl) {{
-  const count  = cl.notes.length;
-  const radius = Math.min(130, Math.max(68, 60 + count * 12));
+        # Note dots
+        dot_x, dot_y, texts = [], [], []
+        for j, note in enumerate(notes):
+            angle = 2 * math.pi * j / n
+            orbit = radius * 0.75 + (j % 3) * 11
+            dot_x.append(cx + orbit * math.cos(angle))
+            dot_y.append(cy + orbit * math.sin(angle))
+            texts.append(note[:120] + ("…" if len(note) > 120 else ""))
 
-  const grad = ctx.createRadialGradient(cl.cx, cl.cy, 0, cl.cx, cl.cy, radius);
-  grad.addColorStop(0,   hexToRgba(cl.color, 0.14));
-  grad.addColorStop(0.7, hexToRgba(cl.color, 0.08));
-  grad.addColorStop(1,   hexToRgba(cl.color, 0.02));
+        fig.add_trace(go.Scatter(
+            x=dot_x, y=dot_y,
+            mode="markers",
+            marker=dict(size=10, color=color, opacity=0.85,
+                        line=dict(width=1.5, color="white")),
+            text=texts,
+            hoverinfo="text",
+            name=label,
+            showlegend=False,
+        ))
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cl.cx, cl.cy, radius, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
-  ctx.fill();
-  ctx.strokeStyle = hexToRgba(cl.color, 0.45);
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.fillStyle = cl.color;
-  ctx.font = "bold 14px Inter,Arial,sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(cl.label, cl.cx, cl.cy - 7);
-  ctx.restore();
-
-  ctx.save();
-  ctx.fillStyle = "#64748b";
-  ctx.font = "11px Inter,Arial,sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillText(count + " note" + (count !== 1 ? "s" : ""), cl.cx, cl.cy + 7);
-  ctx.restore();
-
-  cl._dots = [];
-  cl.notes.forEach((note, ni) => {{
-    const total  = cl.notes.length;
-    const speed  = 0.25 + (ni % 3) * 0.08;
-    const angle  = (2 * Math.PI * ni / total) + time * speed;
-    const orbit  = radius * 0.75 + (ni % 3) * 11;
-    const dx = cl.cx + orbit * Math.cos(angle);
-    const dy = cl.cy + orbit * Math.sin(angle);
-    const dr = 7;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(dx, dy, dr, 0, Math.PI * 2);
-    ctx.fillStyle = cl.color;
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.9)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.restore();
-
-    cl._dots.push({{x: dx, y: dy, r: dr, content: note}});
-  }});
-}}
-
-function draw() {{
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, W, H);
-
-  CLUSTERS.forEach(drawCloud);
-
-  time += 0.003;
-  requestAnimationFrame(draw);
-}}
-draw();
-
-canvas.addEventListener("mousemove", e => {{
-  const rect = canvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-  let found = null;
-  CLUSTERS.forEach(cl => {{
-    cl._dots.forEach(d => {{
-      if (Math.sqrt((d.x - mx) ** 2 + (d.y - my) ** 2) < d.r + 4) found = d;
-    }});
-  }});
-  if (found) {{
-    tip.style.display = "block";
-    tip.style.left = (e.clientX + 14) + "px";
-    tip.style.top  = (e.clientY - 50) + "px";
-    tip.textContent = found.content.slice(0, 120) + (found.content.length > 120 ? "…" : "");
-  }} else {{
-    tip.style.display = "none";
-  }}
-}});
-canvas.addEventListener("mouseleave", () => tip.style.display = "none");
-</script></body></html>"""
-
-    components.html(html, height=600, scrolling=False)
+    fig.update_layout(
+        height=480,
+        margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        xaxis=dict(visible=False, showgrid=False, zeroline=False),
+        yaxis=dict(visible=False, showgrid=False, zeroline=False, scaleanchor="x"),
+        showlegend=False,
+        hoverlabel=dict(bgcolor="#1e293b", font_size=12,
+                        font_color="white", bordercolor="#334155"),
+    )
+    st.plotly_chart(fig, use_container_width=True)

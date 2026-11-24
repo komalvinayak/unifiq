@@ -1,0 +1,9 @@
+[app]
+loadingMessage = "⚡🔥 Ctrl+F in progress..."
+
+[theme]
+primaryColor = "#4F46E5"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8F9FA"
+textColor = "#1E1E2E"
+font = "sans serif"
